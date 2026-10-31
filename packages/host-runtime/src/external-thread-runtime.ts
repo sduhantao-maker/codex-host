@@ -82,10 +82,7 @@ export interface ExternalThread {
   ephemeralTurnIds: Set<HostTurnId>;
   persistenceError: Error | null;
   ignoredInteractionIds: Set<HostInteractionId>;
-  /**
-   * Text-only context accepted from Codex's thread/inject_items before the next Turn.
-   * shortcut: Host-process-local; persist it when Side Chat must survive a Host restart.
-   */
+  /** Durable text-only context accepted before the next native Turn. */
   pendingInjectedText: string[];
   /** Native Session faulted or closed; idle Threads should restore instead of reuse. */
   sessionUnavailable: boolean;
@@ -337,7 +334,7 @@ export class ExternalThreadRuntime {
     if (this.#threads.get(thread.id) === thread) this.#threads.delete(thread.id);
   }
 
-  /** Pending context has no native copy, so retain its owner when recovery fails. */
+  /** Keep the pending-context owner available for an immediate recovery retry. */
   async #dropIdleSessionAfterRecoveryFailure(thread: ExternalThread): Promise<void> {
     if (thread.pendingInjectedText.length === 0) await this.#dropIdleSession(thread);
   }
@@ -437,7 +434,7 @@ export class ExternalThreadRuntime {
       persistenceError: null,
       projectedTerminalTurnId: null,
       ignoredInteractionIds: new Set(),
-      pendingInjectedText: [],
+      pendingInjectedText: [...(input.record.pendingInjectedText ?? [])],
       sessionUnavailable: false,
       steeredTurnIds,
     };
@@ -575,7 +572,7 @@ export class ExternalThreadRuntime {
         if (location.kind !== "external") return location;
         if (location.thread) {
           if (location.thread.sessionUnavailable && this.#idleForRestore(location.thread)) {
-            // Pending Side Chat context only exists in this Host owner, so revive in place.
+            // Pending requests keep their existing owner while its Session is revived.
             if (location.thread.pendingInjectedText.length > 0) {
               const recoveryError = await this.#reviveIdleSession(location.thread);
               if (recoveryError) return { kind: "error", error: recoveryError };
@@ -803,6 +800,7 @@ export class ExternalThreadRuntime {
         event.nativeTurnRef,
         event.outcome.checkpoint,
       );
+      await this.flushInjectedText(thread);
       return null;
     } catch (error) {
       const failure = error instanceof Error ? error : new Error(errorMessage(error));
@@ -811,6 +809,18 @@ export class ExternalThreadRuntime {
       this.#diagnose("External Turn identity could not be persisted");
       return failure;
     }
+  }
+
+  async flushInjectedText(thread: ExternalThread): Promise<void> {
+    if (
+      JSON.stringify(thread.record.pendingInjectedText ?? []) ===
+      JSON.stringify(thread.pendingInjectedText)
+    )
+      return;
+    thread.record = await this.#repository.setPendingInjectedText(
+      thread.id,
+      thread.pendingInjectedText,
+    );
   }
 
   async #restore(record: StoredThreadRecordV1): Promise<ExternalThread> {

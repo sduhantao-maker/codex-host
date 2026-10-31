@@ -185,6 +185,7 @@ function sessionMetadata(record: ServerSession): object {
     sessionGeneration: record.generation,
     capabilities: record.session.capabilities,
     readCapabilities: true,
+    captureActiveForkBoundary: record.session.captureActiveForkBoundary !== undefined,
     initialState: {
       ...initialState,
       ...(record.nativeRef ? { nativeRef: record.nativeRef } : {}),
@@ -862,6 +863,19 @@ export async function startHarnessBrokerServer(input: {
       }
       if (request.method === "session.readSnapshot") {
         return requireSession(request.params).session.readSnapshot();
+      }
+      if (request.method === "session.captureActiveForkBoundary") {
+        const session = requireSession(request.params).session;
+        return session.captureActiveForkBoundary
+          ? session.captureActiveForkBoundary()
+          : {
+              ok: false,
+              error: {
+                code: "unsupported",
+                message: "Active Fork capture is unavailable",
+                retryable: false,
+              },
+            };
       }
       if (request.method === "session.refreshUsage") {
         const record = requireSession(request.params);

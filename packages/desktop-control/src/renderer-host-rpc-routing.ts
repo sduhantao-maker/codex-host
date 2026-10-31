@@ -98,7 +98,7 @@ export function installRendererHostRpcRouting(
       );
     }
   };
-  /** Rewrites only the Model of a Renderer-issued capnweb creation call. */
+  /** Keep native user side chats durable; ordinary forks and background tasks are unchanged. */
   const routeCreationCall = (message: unknown): unknown => {
     if (!Array.isArray(message) || message.length !== 2 || message[0] !== "push") return message;
     const expression: unknown = message[1];
@@ -107,6 +107,24 @@ export function installRendererHostRpcRouting(
     const [, importId, path, args] = expression as [unknown, unknown, unknown, unknown];
     if (!Array.isArray(path) || path.length !== 1 || !Array.isArray(args)) return message;
     const [input, options] = args as unknown[];
+    if (
+      (path[0] === "forkConversationFromLatest" || path[0] === "forkConversationFromTurn") &&
+      isRecord(input) &&
+      input.sideConversation === true &&
+      input.threadSource === "user" &&
+      typeof input.sourceConversationId === "string" &&
+      input.sourceConversationId.length > 0
+    ) {
+      return [
+        "push",
+        [
+          "pipeline",
+          importId,
+          path,
+          [{ ...input, ephemeral: false, attachToSource: true }, ...args.slice(1)],
+        ],
+      ];
+    }
     if (!isRecord(input) || !isRecord(input.collaborationMode)) return message;
     const settings = input.collaborationMode.settings;
     if (!isRecord(settings)) return message;

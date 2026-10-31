@@ -94,9 +94,46 @@ export async function executeExternalThreadFork(input: {
   } else {
     boundaryIndex = mappings.length - 1;
   }
-  const boundary = mappings[boundaryIndex];
+  let boundary:
+    | {
+        hostTurnId: NonNullable<ExternalThread["activeTurnId"]>;
+        nativeCheckpointRef?: NativeCheckpointRef | undefined;
+      }
+    | undefined = mappings[boundaryIndex];
+  let capturedActiveBoundary = false;
+  if (
+    fork.attachToSource &&
+    source.running &&
+    !fork.lastTurnId &&
+    !fork.beforeTurnId &&
+    source.session.captureActiveForkBoundary
+  ) {
+    const captured = await source.session.captureActiveForkBoundary();
+    if (!captured.ok)
+      return { ok: false, error: mapExternalThreadHarnessError(captured.error, "fork") };
+    const nativeRef = source.record.nativeSessionRef;
+    if (
+      !nativeRef ||
+      captured.value.turnId !== source.activeTurnId ||
+      captured.value.checkpoint.harnessId !== source.harnessId ||
+      captured.value.checkpoint.nativeSessionId !== nativeRef.nativeSessionId
+    ) {
+      return {
+        ok: false,
+        error: {
+          code: -32080,
+          message: "Active Fork boundary changed; retry after the source settles",
+        },
+      };
+    }
+    boundary = {
+      hostTurnId: captured.value.turnId,
+      nativeCheckpointRef: captured.value.checkpoint,
+    };
+    capturedActiveBoundary = true;
+  }
   // Native history may have split this boundary Turn while Desktop still shows it whole.
-  if (boundary && source.steeredTurnIds.has(boundary.hostTurnId)) {
+  if (boundary && !capturedActiveBoundary && source.steeredTurnIds.has(boundary.hostTurnId)) {
     return {
       ok: false,
       error: {
@@ -105,7 +142,7 @@ export async function executeExternalThreadFork(input: {
       },
     };
   }
-  if (boundaryIndex < 0 || !boundary?.nativeCheckpointRef) {
+  if (!boundary?.nativeCheckpointRef) {
     return {
       ok: false,
       error: { code: -32080, message: "External Fork Checkpoint is unavailable" },
@@ -127,8 +164,17 @@ export async function executeExternalThreadFork(input: {
         harnessId: source.record.harnessId,
         cwd: targetCwd,
         transportModelId: source.transportModelId,
-        ephemeral: fork.ephemeral ?? source.record.ephemeral,
+        ephemeral: fork.attachToSource ? false : (fork.ephemeral ?? source.record.ephemeral),
         historyMode: source.record.historyMode,
+        ...(fork.attachToSource
+          ? {
+              attachedToThreadId: source.id,
+              sideChatOrigin: {
+                threadId: source.id,
+                ...(source.record.projectId ? { projectId: source.record.projectId } : {}),
+              },
+            }
+          : {}),
         forkSource: {
           hostThreadId: source.id,
           hostTurnId: boundary.hostTurnId,
@@ -202,6 +248,11 @@ export async function executeExternalThreadFork(input: {
       derivedNativeRef as NativeSessionRef,
       snapshot.value,
     );
+    if (fork.attachToSource && source.record.projectId) {
+      aligned.record = await repository.updateMetadata(aligned.record.hostThreadId, {
+        projectId: source.record.projectId,
+      });
+    }
     const thread = externalThreadValue({
       record: aligned.record,
       turns: aligned.turns,

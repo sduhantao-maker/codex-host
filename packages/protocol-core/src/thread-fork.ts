@@ -16,6 +16,7 @@ export interface DecodedThreadForkRequest {
   cwd?: string;
   excludeTurns: boolean;
   ephemeral?: boolean;
+  attachToSource?: boolean;
   runtimeWorkspaceRoots?: string[];
   approvalPolicy?: string;
   sandbox?: string;
@@ -83,6 +84,10 @@ export function decodeThreadForkRequest(request: JsonRpcRequest): DecodedThreadF
   }
   const path = optionalText(params, "path", { allowEmpty: true });
   const ephemeral = optionalBoolean(params, "ephemeral");
+  const attachToSource = optionalBoolean(params, "attachToSource");
+  if (attachToSource && ephemeral) {
+    throw new Error("thread/fork cannot combine attachToSource with ephemeral");
+  }
   return {
     threadId,
     ...(lastTurnText ? { lastTurnId: hostTurnIdSchema.parse(lastTurnText) } : {}),
@@ -93,6 +98,7 @@ export function decodeThreadForkRequest(request: JsonRpcRequest): DecodedThreadF
     ...optionalField(params, "cwd"),
     excludeTurns: optionalBoolean(params, "excludeTurns") ?? false,
     ...(ephemeral !== undefined ? { ephemeral } : {}),
+    ...(attachToSource !== undefined ? { attachToSource } : {}),
     ...(Array.isArray(runtimeWorkspaceRoots)
       ? { runtimeWorkspaceRoots: runtimeWorkspaceRoots as string[] }
       : {}),

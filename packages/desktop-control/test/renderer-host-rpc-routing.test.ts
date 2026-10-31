@@ -139,6 +139,44 @@ function creation(method: string, model: string, options: Record<string, unknown
   ];
 }
 
+it("makes only user side-chat forks durable without changing their source or callbacks", async () => {
+  const fixture = setup();
+  const routing = await install(fixture);
+  const input = {
+    sourceConversationId: "parent",
+    threadSource: "user",
+    sideConversation: true,
+    sideConversationParentNavigationPath: "/thread/parent",
+    ephemeral: true,
+    afterConversationCreated: ["export", -42],
+    readResumeInputs: ["export", -43],
+  };
+  const call = (method: string, value: unknown) => ["push", ["pipeline", -188, [method], [value]]];
+  try {
+    for (const method of ["forkConversationFromLatest", "forkConversationFromTurn"]) {
+      fixture.post(call(method, input));
+      expect(fixture.sent.at(-1)).toEqual(
+        call(method, { ...input, ephemeral: false, attachToSource: true }),
+      );
+    }
+    for (const value of [
+      { ...input, sideConversation: false },
+      { ...input, threadSource: "agent" },
+      { ...input, sourceConversationId: "" },
+    ]) {
+      const original = call("forkConversationFromLatest", value);
+      fixture.post(original);
+      expect(fixture.sent.at(-1)).toBe(original);
+    }
+    const parentTurn = call("startTurn", { conversationId: "parent", input: "untouched" });
+    fixture.post(parentTurn);
+    expect(fixture.sent.at(-1)).toBe(parentTurn);
+    expect(input.ephemeral).toBe(true);
+  } finally {
+    routing.dispose();
+  }
+});
+
 it("routes Host requests through the main-process RPC client without native internals", async () => {
   const fixture = setup();
   const routing = await install(fixture);

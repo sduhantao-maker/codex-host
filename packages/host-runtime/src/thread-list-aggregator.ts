@@ -85,6 +85,7 @@ export async function aggregateThreadList(input: {
   query: DecodedThreadListRequest;
   records: readonly StoredThreadRecordV1[];
   sharedThreads?: readonly JsonObject[];
+  excludedOfficialThreadIds?: ReadonlySet<string>;
   runtimeFor(threadId: string): ExternalThreadListRuntimeState | null;
   placementOf?(threadId: string): StoredSectionPlacementV1 | undefined;
   requestOfficialPage(params: JsonObject): Promise<OfficialThreadListPage>;
@@ -170,7 +171,11 @@ export async function aggregateThreadList(input: {
   while (output.length < query.limit) {
     const external = externalPage.data[externalIndex] ?? null;
     let official = await ensureOfficial();
-    while (official && externalIds.has(String(official.thread.id))) {
+    while (
+      official &&
+      (externalIds.has(String(official.thread.id)) ||
+        input.excludedOfficialThreadIds?.has(String(official.thread.id)))
+    ) {
       officialIndex += 1;
       official = await ensureOfficial();
     }

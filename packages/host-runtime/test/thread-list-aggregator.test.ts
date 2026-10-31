@@ -93,6 +93,46 @@ function directionalOfficialSource(rowsAscending: JsonObject[]) {
 }
 
 describe("aggregated Thread list", () => {
+  it("continues across pages containing only registered side chats", async () => {
+    const source = officialSource([
+      official("side-one", 3),
+      official("side-two", 2),
+      official("main", 1),
+    ]);
+    const page = await aggregateThreadList({
+      query: query({ limit: 1 }),
+      records: [],
+      excludedOfficialThreadIds: new Set(["side-one", "side-two"]),
+      runtimeFor: () => null,
+      requestOfficialPage: source.request,
+    });
+    expect(page.data.map((row) => row.id)).toEqual(["main"]);
+    expect(page.nextCursor).toBeNull();
+    expect(source.calls.map((call) => call.cursor)).toEqual([null, "1", "2"]);
+  });
+
+  it("keeps exact native consumed-prefix cursors when a mixed page contains hidden side chats", async () => {
+    const source = officialSource([
+      official("side", 90),
+      official("native-a", 80),
+      official("native-b", 70),
+    ]);
+    const options = {
+      records: [external("external-a", 100), external("external-b", 95)],
+      excludedOfficialThreadIds: new Set(["side"]),
+      runtimeFor: () => null,
+      requestOfficialPage: source.request,
+    };
+    const first = await aggregateThreadList({ ...options, query: query({ limit: 3 }) });
+    expect(first.data.map((row) => row.id)).toEqual(["external-a", "external-b", "native-a"]);
+    expect(source.calls).toContainEqual(expect.objectContaining({ cursor: null, limit: 2 }));
+    const second = await aggregateThreadList({
+      ...options,
+      query: query({ limit: 3, cursor: first.nextCursor }),
+    });
+    expect(second.data.map((row) => row.id)).toEqual(["native-b"]);
+    expect(second.nextCursor).toBeNull();
+  });
   it("paginates shared and local external Threads together, keeping shared live status", async () => {
     const records = [external("local", 4), external("shared", 2)];
     const sharedThreads = [

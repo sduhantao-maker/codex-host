@@ -10,6 +10,7 @@ const MAX_PAGE_SIZE = 100;
 const UINT32_MAX = 4_294_967_295;
 
 const THREAD_LIST_FIELDS = new Set([
+  "attachedToThreadId",
   "ancestorThreadId",
   "archived",
   "cursor",
@@ -60,6 +61,8 @@ export interface HostThreadListCursor {
 
 export interface DecodedThreadListRequest {
   params: JsonObject;
+  /** Undefined lists normal chats; a string selects one parent's attached chats. */
+  attachedToThreadId?: string | null;
   archived: boolean;
   cwd: string[] | null;
   isPinned: boolean | null;
@@ -286,6 +289,10 @@ export function decodeThreadListRequest(request: JsonRpcRequest): DecodedThreadL
   if (request.method !== "thread/list") return null;
   const params = paramsObject(request, request.method);
   const archived = nullableBoolean(params.archived, "thread/list params.archived") ?? false;
+  const attachedToThreadId =
+    params.attachedToThreadId === undefined
+      ? undefined
+      : nullableText(params.attachedToThreadId, "thread/list params.attachedToThreadId");
   const cwd = decodeCwd(params.cwd);
   const isPinned = nullableBoolean(params.isPinned, "thread/list params.isPinned");
   const modelProviders = nullableTextArray(
@@ -299,6 +306,11 @@ export function decodeThreadListRequest(request: JsonRpcRequest): DecodedThreadL
   );
   if (parentThreadId !== null && ancestorThreadId !== null) {
     throw new Error("thread/list cannot combine parentThreadId and ancestorThreadId");
+  }
+  if (attachedToThreadId != null && (parentThreadId !== null || ancestorThreadId !== null)) {
+    throw new Error(
+      "thread/list cannot combine attachedToThreadId with parentThreadId or ancestorThreadId",
+    );
   }
   const projectId =
     params.projectId === undefined
@@ -319,6 +331,7 @@ export function decodeThreadListRequest(request: JsonRpcRequest): DecodedThreadL
     throw new Error("thread/list params.useStateDbOnly must be boolean");
   }
   const fingerprint = queryFingerprint({
+    ...(attachedToThreadId === undefined ? {} : { attachedToThreadId }),
     ancestorThreadId,
     archived,
     cwd,
@@ -358,6 +371,7 @@ export function decodeThreadListRequest(request: JsonRpcRequest): DecodedThreadL
     isSectionCursor && cursorText ? decodeSectionCursor(cursorText, fingerprint) : null;
   return {
     params: { ...(params as JsonObject) },
+    ...(attachedToThreadId === undefined ? {} : { attachedToThreadId }),
     archived,
     cwd,
     isPinned,

@@ -16,6 +16,7 @@ import {
 } from "@codexhost/shared-contracts";
 
 import { mapClaudeSnapshot } from "./claude-history.js";
+import { claudeForkPrefix } from "./claude-fork-boundary.js";
 import type { ClaudePendingSessions } from "./pending-session.js";
 import type { ClaudeAdapterDependencies } from "./transport.js";
 
@@ -69,6 +70,7 @@ async function readSnapshot(
   dependencies: ClaudeForkInput["dependencies"],
   cwd: string,
   sessionId: string,
+  checkpointId?: string,
 ): Promise<HarnessResult<HostThreadSnapshot>> {
   let messages: unknown[];
   try {
@@ -86,6 +88,19 @@ async function readSnapshot(
     };
   }
   try {
+    if (checkpointId !== undefined) {
+      const prefix = claudeForkPrefix(messages, checkpointId);
+      if (!prefix)
+        return {
+          ok: false,
+          error: error(
+            "checkpointNotFound",
+            "Claude Code Fork boundary is unavailable or has incomplete tools",
+            true,
+          ),
+        };
+      messages = prefix;
+    }
     return { ok: true, value: mapClaudeSnapshot(messages, sessionId) };
   } catch {
     return {
@@ -147,7 +162,13 @@ export async function forkClaudeSession(
 
   // Native worktree entry changes the Session cwd without changing the Desktop workspace.
   // The SDK resolves the source within that workspace's project/worktree history.
-  const source = await readSnapshot(input.dependencies, input.cwd, sourceRef.data.nativeSessionId);
+  const forkCheckpointId = checkpoint?.success ? checkpoint.data.checkpointId : undefined;
+  const source = await readSnapshot(
+    input.dependencies,
+    input.cwd,
+    sourceRef.data.nativeSessionId,
+    forkCheckpointId,
+  );
   if (!source.ok) return source;
   if (input.kind === "rollbackLastTurn" && source.value.turns.length === 0) {
     return {
@@ -185,12 +206,10 @@ export async function forkClaudeSession(
   const boundaryIndex =
     input.kind === "rollbackLastTurn"
       ? source.value.turns.length - 2
-      : source.value.turns.findIndex(
-          (turn) =>
-            checkpoint?.success && turn.checkpoint?.checkpointId === checkpoint.data.checkpointId,
-        );
+      : source.value.turns.length - 1;
   const retained = source.value.turns[boundaryIndex];
   const boundaryId =
+    forkCheckpointId ??
     retained?.checkpoint?.checkpointId ??
     (input.kind === "rollbackLastTurn" ? retained?.nativeTurnRef.nativeTurnKey : undefined);
   if (boundaryIndex < 0 || !boundaryId) {
@@ -230,7 +249,7 @@ export async function forkClaudeSession(
   };
   const [derived, sourceAfter] = await Promise.all([
     readSnapshot(input.dependencies, input.cwd, derivedSessionId),
-    readSnapshot(input.dependencies, input.cwd, sourceRef.data.nativeSessionId),
+    readSnapshot(input.dependencies, input.cwd, sourceRef.data.nativeSessionId, forkCheckpointId),
   ]);
   if (!derived.ok) {
     await cleanup();

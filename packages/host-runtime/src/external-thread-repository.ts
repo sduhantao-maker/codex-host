@@ -15,6 +15,7 @@ import {
   type ReplaceReadySessionInput,
   type StoredDelegationRecordV1,
   type StoredSectionPlacementV1,
+  type StoredSideChatCollectionEntry,
   type StoredThreadRecordV1,
   type StoredTurnMappingV1,
   type ThreadMetadataPatch,
@@ -36,6 +37,12 @@ import {
 
 export interface ExternalThreadStore {
   initialize(): Promise<void>;
+  listSideChatCollection(): Promise<StoredSideChatCollectionEntry[]>;
+  registerSideChatOrigin(entry: StoredSideChatCollectionEntry): Promise<void>;
+  setSideChatCollected(
+    threadId: HostThreadId,
+    entry: StoredSideChatCollectionEntry | null,
+  ): Promise<void>;
   getThread(hostThreadId: HostThreadId): Promise<StoredThreadRecordV1 | null>;
   listThreads(): Promise<StoredThreadRecordV1[]>;
   getThreadByCreateRequest(createRequestId: string): Promise<StoredThreadRecordV1 | null>;
@@ -73,6 +80,10 @@ export interface ExternalThreadStore {
     transportModelId: string,
   ): Promise<StoredThreadRecordV1>;
   setArchived(hostThreadId: HostThreadId, archived: boolean): Promise<StoredThreadRecordV1>;
+  setPendingInjectedText(
+    hostThreadId: HostThreadId,
+    texts: readonly string[],
+  ): Promise<StoredThreadRecordV1>;
   updateMetadata(
     hostThreadId: HostThreadId,
     patch: ThreadMetadataPatch,
@@ -119,6 +130,21 @@ export class ExternalThreadRepository {
 
   initialize(): Promise<void> {
     return this.store.initialize();
+  }
+
+  listSideChatCollection(): Promise<StoredSideChatCollectionEntry[]> {
+    return this.store.listSideChatCollection();
+  }
+
+  registerSideChatOrigin(entry: StoredSideChatCollectionEntry): Promise<void> {
+    return this.store.registerSideChatOrigin(entry);
+  }
+
+  setSideChatCollected(
+    threadId: HostThreadId,
+    entry: StoredSideChatCollectionEntry | null,
+  ): Promise<void> {
+    return this.store.setSideChatCollected(threadId, entry);
   }
 
   close(): Promise<void> {
@@ -217,6 +243,13 @@ export class ExternalThreadRepository {
 
   setArchived(hostThreadId: HostThreadId, archived: boolean): Promise<StoredThreadRecordV1> {
     return this.store.setArchived(hostThreadId, archived);
+  }
+
+  setPendingInjectedText(
+    hostThreadId: HostThreadId,
+    texts: readonly string[],
+  ): Promise<StoredThreadRecordV1> {
+    return this.store.setPendingInjectedText(hostThreadId, texts);
   }
 
   updateMetadata(
@@ -507,6 +540,8 @@ export function createExternalThreadRecordInput(input: {
   transportModelId: string;
   ephemeral: boolean;
   historyMode: "legacy" | "paginated";
+  attachedToThreadId?: CreateProvisionalThreadInput["attachedToThreadId"];
+  sideChatOrigin?: CreateProvisionalThreadInput["sideChatOrigin"];
   forkSource?: CreateProvisionalThreadInput["forkSource"];
   subagent?: CreateProvisionalThreadInput["subagent"];
 }): CreateProvisionalThreadInput {
@@ -519,6 +554,8 @@ export function createExternalThreadRecordInput(input: {
     transportModelId: input.transportModelId,
     ephemeral: input.ephemeral,
     historyMode: input.historyMode,
+    ...(input.attachedToThreadId ? { attachedToThreadId: input.attachedToThreadId } : {}),
+    ...(input.sideChatOrigin ? { sideChatOrigin: input.sideChatOrigin } : {}),
     ...(input.forkSource ? { forkSource: input.forkSource } : {}),
     ...(input.subagent ? { subagent: input.subagent } : {}),
   };
@@ -614,6 +651,17 @@ export function externalThreadValue(input: {
         }
       : null,
     forkedFromId: record.forkSource?.hostThreadId ?? null,
+    attachedToThreadId: record.attachedToThreadId ?? null,
+    ...(record.sideChatOrigin
+      ? {
+          codexhostSideChatOrigin: {
+            threadId: record.sideChatOrigin.threadId,
+            ...(record.sideChatOrigin.projectId
+              ? { projectId: record.sideChatOrigin.projectId }
+              : {}),
+          },
+        }
+      : {}),
     parentThreadId: record.subagent?.parentHostThreadId ?? null,
     ephemeral: record.ephemeral,
     canAcceptDirectInput: record.subagent ? false : input.loaded === false ? null : true,

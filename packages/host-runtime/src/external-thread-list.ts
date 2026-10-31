@@ -110,6 +110,11 @@ function includesExternalRecord(
     current = parent;
   }
   const sourceKind = record.subagent ? "subAgentThreadSpawn" : "vscode";
+  if (typeof query.attachedToThreadId === "string") {
+    if (record.attachedToThreadId !== query.attachedToThreadId) return false;
+  } else if (record.attachedToThreadId) {
+    return false;
+  }
   const scoped = query.parentThreadId !== null || query.ancestorThreadId !== null;
   if (
     record.subagent &&

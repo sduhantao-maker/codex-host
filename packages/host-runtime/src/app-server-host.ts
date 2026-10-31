@@ -189,6 +189,15 @@ import {
   type ExternalThreadResolution,
 } from "./external-thread-runtime.js";
 import { ExternalSessionReleaseError } from "./external-thread-lifecycle.js";
+import { SideChatLibrary } from "./side-chat-library.js";
+import { forkOfficialSideChat } from "./official-side-chat-fork.js";
+import {
+  SIDE_CHAT_LIST_METHOD,
+  SIDE_CHAT_UPDATE_METHOD,
+  sideChatListParamsSchema,
+  sideChatUpdateParamsSchema,
+  type HostThreadId,
+} from "@codexhost/shared-contracts";
 import { ExternalQueueError, ExternalThreadQueue } from "./external-thread-queue.js";
 import {
   ExternalSteerError,
@@ -285,7 +294,11 @@ import {
   officialThreadListPageFromResponse,
   OfficialThreadListError,
 } from "./thread-list-aggregator.js";
-import { listSectionThreads, moveThreadSection } from "./external-thread-sections.js";
+import {
+  listAllOfficialRows,
+  listSectionThreads,
+  moveThreadSection,
+} from "./external-thread-sections.js";
 import { externalThreadListEntries } from "./external-thread-list.js";
 import { externalThreadEmptyOfficialResult } from "./external-thread-official-defaults.js";
 import { ModelPriceCatalog } from "./model-prices.js";
@@ -659,6 +672,7 @@ export class AppServerHost {
   readonly #modelPrices: ModelPriceCatalog;
   readonly #observedSessionUsage: ObservedSessionUsage;
   #repository: ExternalThreadRepository;
+  readonly #sideChatLibrary: SideChatLibrary;
   #pendingDesktopApprovals = new Map<HostApprovalRequestId, PendingDesktopApproval>();
   #pendingDesktopQuestions = new Map<HostQuestionRequestId, PendingDesktopQuestion>();
   #nextApprovalRequestId = HOST_APPROVAL_REQUEST_ID_MAX;
@@ -794,6 +808,11 @@ export class AppServerHost {
       options.mappingStore ??
         createProductionExternalThreadStore(this.#options.environment ?? process.env),
     );
+    this.#sideChatLibrary = new SideChatLibrary({
+      store: this.#repository,
+      readThread: (threadId) => this.#readSideChatThread(threadId),
+      listAttached: (threadId) => this.#listAttachedSideChats(threadId),
+    });
     this.#externalAdapters = new Map(options.externalAdapters);
     for (const [harnessId, adapter] of this.#externalAdapters) {
       if (adapter.harnessId !== harnessId) {
@@ -812,7 +831,8 @@ export class AppServerHost {
         queue: this.#desktopRequests,
         onClosed: (thread) => this.#resolveThreadInteractions(thread),
         canRelease: (thread) =>
-          thread.pendingInjectedText.length === 0 &&
+          JSON.stringify(thread.pendingInjectedText) ===
+            JSON.stringify(thread.record.pendingInjectedText ?? []) &&
           !this.#hasRunningSubagents(thread.id) &&
           !thread.session.hasBackgroundWork?.() &&
           !this.#externalSteering.hasPending(thread.id) &&
@@ -1356,7 +1376,9 @@ export class AppServerHost {
       this.#options.sharedThreads &&
       (request.method.startsWith("thread/") ||
         request.method.startsWith("turn/") ||
-        request.method.startsWith("codexhost/thread/"))
+        request.method.startsWith("codexhost/thread/") ||
+        request.method === SIDE_CHAT_LIST_METHOD ||
+        request.method === SIDE_CHAT_UPDATE_METHOD)
     ) {
       try {
         const reply = await this.#options.sharedThreads.route(request);
@@ -1375,7 +1397,9 @@ export class AppServerHost {
         request.method.startsWith("thread/") ||
         request.method.startsWith("turn/") ||
         request.method.startsWith("codexhost/thread/") ||
-        request.method.startsWith("codexhost/harness/")
+        request.method.startsWith("codexhost/harness/") ||
+        request.method === SIDE_CHAT_LIST_METHOD ||
+        request.method === SIDE_CHAT_UPDATE_METHOD
       )
     ) {
       await this.#writer.json(
@@ -1701,6 +1725,49 @@ export class AppServerHost {
       await this.#forkExternalThreadFromRenderer(request);
       return;
     }
+    if (request.method === SIDE_CHAT_LIST_METHOD || request.method === SIDE_CHAT_UPDATE_METHOD) {
+      this.#dispatchDesktopReply(request, async () => {
+        const listing = request.method === SIDE_CHAT_LIST_METHOD;
+        const parsed = listing
+          ? sideChatListParamsSchema.safeParse(request.params ?? {})
+          : sideChatUpdateParamsSchema.safeParse(request.params);
+        if (!parsed.success) {
+          await this.#writer.json(rpcError(request, -32602, "Invalid side chat library params"));
+          return;
+        }
+        try {
+          const assertScope = this.#sideChatScopeGuard();
+          const result = listing
+            ? await this.#sideChatLibrary.list(
+                sideChatListParamsSchema.parse(parsed.data),
+                assertScope,
+              )
+            : await this.#sideChatLibrary.update(
+                sideChatUpdateParamsSchema.parse(parsed.data),
+                assertScope,
+              );
+          if (listing && "items" in result && this.#options.sharedThreads) {
+            const shared = await this.#options.sharedThreads.sideChats(routingParams(request));
+            result.items = [
+              ...new Map(
+                [...result.items, ...shared].map((item) => [item.threadId, item]),
+              ).values(),
+            ];
+          }
+          assertScope();
+          await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
+        } catch {
+          await this.#writer.json(
+            rpcError(
+              request,
+              -32081,
+              "Side chat library is unavailable; saved records were retained",
+            ),
+          );
+        }
+      });
+      return;
+    }
     if (request.method === "codexhost/thread/inspect") {
       await this.#inspectThread(request);
       return;
@@ -1917,6 +1984,15 @@ export class AppServerHost {
         await this.#forkExternalThread(request, resolution.thread, fork);
         return;
       }
+      if (params.attachToSource === true && !this.#options.externalOnly) {
+        const response = await forkOfficialSideChat(params, {
+          store: this.#repository,
+          requestOfficial: (method, nativeParams) => this.#requestOfficial(method, nativeParams),
+          assertScope: this.#sideChatScopeGuard(),
+        });
+        await this.#writer.json({ ...response, id: request.id });
+        return;
+      }
     }
     if (request.method === "thread/revert") {
       const params = isRecord(request.params) ? request.params : {};
@@ -1989,11 +2065,8 @@ export class AppServerHost {
         const resolution = await this.#resolveExternalThread(params.threadId);
         if (await this.#writeResolutionError(request, resolution)) return;
         if (resolution.kind === "external") {
-          this.#dispatchDesktopReply(
-            request,
-            () => this.#injectExternalThreadItems(request, resolution.thread, params),
-            resolution.thread.id,
-          );
+          // Keep admission ordered with the next Turn until its reference context is durable.
+          await this.#injectExternalThreadItems(request, resolution.thread, params);
           return;
         }
       }
@@ -2940,6 +3013,76 @@ export class AppServerHost {
     };
   }
 
+  #sideChatScopeGuard(): () => void {
+    const generation = this.#officialRuntimeScope.owner.generation;
+    const account = this.#accountControl.snapshot();
+    return () => {
+      const current = this.#accountControl.snapshot();
+      if (
+        generation !== this.#officialRuntimeScope.owner.generation ||
+        account.revision !== current.revision ||
+        account.currentAccountId !== current.currentAccountId ||
+        account.instanceId !== current.instanceId
+      ) {
+        throw new Error("Side chat account or connection changed; retry in the current account");
+      }
+    };
+  }
+
+  async #readSideChatThread(threadId: HostThreadId): Promise<JsonObject | null> {
+    const shared = await this.#options.sharedThreads?.route({
+      id: "side-chat-library-read",
+      method: "thread/read",
+      params: { threadId, includeTurns: false },
+    });
+    if (shared)
+      return isRecord(shared.result) && isRecord(shared.result.thread)
+        ? shared.result.thread
+        : null;
+    const location = await this.#locateExternalThread(threadId);
+    if (location.kind === "external") {
+      if (location.record.state !== "ready") return null;
+      return externalThreadValue({
+        record: location.record,
+        turns: [],
+        sessionId: await this.#repository.sessionTreeId(location.record),
+        loaded: false,
+      });
+    }
+    if (location.kind !== "official" || this.#options.externalOnly) return null;
+    const response = await this.#requestOfficial("thread/read", { threadId, includeTurns: false });
+    return isRecord(response.result) && isRecord(response.result.thread)
+      ? response.result.thread
+      : null;
+  }
+
+  async #listAttachedSideChats(threadId: HostThreadId): Promise<JsonObject[]> {
+    const shared = this.#options.sharedThreads;
+    if (shared && (await shared.ownership([threadId])).has(threadId))
+      return shared.list({
+        attachedToThreadId: threadId,
+        archived: false,
+      });
+    const location = await this.#locateExternalThread(threadId);
+    if (location.kind === "external") {
+      const records = await this.#repository.list();
+      return records
+        .filter(
+          (record) =>
+            record.state === "ready" && !record.archived && record.attachedToThreadId === threadId,
+        )
+        .map((record) =>
+          externalThreadValue({ record, turns: [], sessionId: threadId, loaded: false }),
+        );
+    }
+    if (location.kind !== "official" || this.#options.externalOnly) return [];
+    return listAllOfficialRows((method, params) => this.#requestOfficial(method, params), {
+      attachedToThreadId: threadId,
+      archived: false,
+      useStateDbOnly: true,
+    });
+  }
+
   async #listThreads(
     request: JsonRpcRequest,
     listRequest: DecodedThreadListRequest,
@@ -2952,9 +3095,23 @@ export class AppServerHost {
       const placementById = new Map(
         placements.map((entry) => [entry.hostThreadId as string, entry]),
       );
+      const hiddenSideChats =
+        listRequest.params.attachedToThreadId == null
+          ? new Set(
+              (
+                await this.#repository.listSideChatCollection().catch((error: unknown) => {
+                  this.#diagnose(error);
+                  return [];
+                })
+              )
+                .filter((entry) => entry.registeredAt !== undefined)
+                .map((entry) => String(entry.threadId)),
+            )
+          : new Set<string>();
       const result = await aggregateThreadList({
         query: listRequest,
         records,
+        excludedOfficialThreadIds: hiddenSideChats,
         ...(this.#options.sharedThreads
           ? {
               sharedThreads: await this.#options.sharedThreads.list(listRequest.params),
@@ -4310,6 +4467,17 @@ export class AppServerHost {
       await this.#writer.json(rpcError(request, -32602, errorMessage(error)));
       return;
     }
+    try {
+      thread.record = await this.#repository.setPendingInjectedText(thread.id, [
+        ...thread.pendingInjectedText,
+        ...texts,
+      ]);
+    } catch {
+      await this.#writer.json(
+        rpcError(request, -32081, "Side Chat context could not be persisted"),
+      );
+      return;
+    }
     appendExternalThreadInjectedText(thread.pendingInjectedText, texts);
     await this.#writer.json(rpcEnvelope(request, { result: {} }));
   }
@@ -4483,6 +4651,20 @@ export class AppServerHost {
     request: JsonRpcRequest,
     location: Extract<ExternalThreadLocation, { kind: "external" }>,
   ): Promise<void> {
+    if (
+      (await this.#repository.list()).some(
+        (record) => record.attachedToThreadId === location.record.hostThreadId,
+      )
+    ) {
+      await this.#writer.json(
+        rpcError(
+          request,
+          -32076,
+          "Thread has attached side chats; archive it instead to retain their source",
+        ),
+      );
+      return;
+    }
     try {
       await this.#externalRuntime.deleteThread(location.record.hostThreadId);
     } catch (error) {
@@ -4755,7 +4937,7 @@ export class AppServerHost {
       this.#signalActiveWorkChanged();
       throw new Error(result.error.message);
     }
-    thread.pendingInjectedText.length = 0;
+    await this.#consumeExternalInjectedText(thread);
   }
 
   async #startExternalTurn(request: JsonRpcRequest, thread: ExternalThread): Promise<void> {
@@ -5160,7 +5342,7 @@ export class AppServerHost {
         input: [{ type: "text", text: rewriteDelegationMentionText(turnText) }],
       });
       if (!result.ok) throw new ExternalSteerError(-32073, result.error.message);
-      thread.pendingInjectedText.length = 0;
+      await this.#consumeExternalInjectedText(thread);
       return { turnId, turn: projection.projector.pendingTurn(), gate };
     } catch (error) {
       restoreExecutionHost();
@@ -5172,6 +5354,15 @@ export class AppServerHost {
       this.#signalActiveWorkChanged();
       throw error;
     }
+  }
+
+  async #consumeExternalInjectedText(thread: ExternalThread): Promise<void> {
+    thread.pendingInjectedText.length = 0;
+    // shortcut: a crash before durable clear may replay context; use native receipts for crash-idempotent delivery.
+    // Native acceptance cannot be rolled back; terminal persistence retries a failed clear.
+    await this.#externalRuntime
+      .flushInjectedText(thread)
+      .catch((error: unknown) => this.#diagnose(error));
   }
 
   /**
