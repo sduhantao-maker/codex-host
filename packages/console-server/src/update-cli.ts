@@ -14,7 +14,11 @@ export async function runUpdateCommand(
     write(`codexhost ${checked.currentVersion} is up to date.`);
     return;
   }
-  if (!checked.installationAvailable) throw new Error("No supported update for this installation");
+  if (!checked.installationAvailable) {
+    throw new Error(
+      checked.installationDisabledReason ?? "No supported update for this installation",
+    );
+  }
   write(`Updating codexhost ${checked.currentVersion} → ${checked.latestVersion}...`);
   const { status } = await updates.start(target);
   if (status.phase === "failed") throw new Error(status.error ?? "Update failed");

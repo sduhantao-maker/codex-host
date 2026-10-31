@@ -17,6 +17,28 @@ const status = {
 } as const;
 
 describe("update runtime contracts", () => {
+  it("accepts an optional bounded installation policy without treating it as a failed check", () => {
+    const result = {
+      currentVersion: "1.2.2",
+      installation: "npm",
+      latestVersion: "1.2.3",
+      updateAvailable: true,
+      installationAvailable: false,
+      installationDisabledReason: "Upgrade through the personal fork",
+      releaseNotes: null,
+      releaseNotesUrl: null,
+      status: null,
+      error: null,
+    };
+    expect(updateCheckResultSchema.parse(result)).toMatchObject({
+      installationDisabledReason: result.installationDisabledReason,
+      error: null,
+    });
+    expect(
+      updateCheckResultSchema.safeParse({ ...result, installationDisabledReason: "x".repeat(501) })
+        .success,
+    ).toBe(false);
+  });
   it("accepts bounded check, start, and status results", () => {
     expect(
       updateCheckResultSchema.parse({

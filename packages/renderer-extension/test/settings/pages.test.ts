@@ -2777,6 +2777,52 @@ describe("Renderer Updates page", () => {
     plainScope.dispose();
   });
 
+  it.each([null, "Release query unavailable"])(
+    "keeps controlled-upgrade guidance without official install fallback (check error=%s)",
+    async (error) => {
+      const installationDisabledReason =
+        "Upgrade through the personal fork after compatibility checks.";
+      const client = {
+        checkUpdate: vi.fn(async () => ({
+          ...updateCheck(),
+          installationAvailable: false,
+          installationDisabledReason,
+          error,
+        })),
+        startUpdate: vi.fn(),
+        readUpdateStatus: vi.fn(async () => ({ status: null })),
+      };
+      const page = createDefaultRendererSettingsPages(
+        rendererSettingsMessages("en"),
+        () => client,
+      ).find(({ id }) => id === "updates");
+      if (!page) throw new Error("Updates page is not registered");
+      const document = new FakeDocument();
+      const content = document.createElement("main");
+      const scope = new RendererSettingsPageScope();
+      const cleanup = page.mount({
+        content: content as unknown as HTMLElement,
+        signal: scope.signal,
+        runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+      });
+      await vi.waitFor(() => expect(visibleText(content)).toContain(installationDisabledReason));
+      expect(elementWithClass(content, "settings-update-controls").hidden).toBe(true);
+      const panel = elementWithClass(content, "settings-update-panel");
+      expect(panel.dataset.updateState).toBe(error ? "error" : "available");
+      expect(visibleNotesText(elementWithClass(content, "settings-update-notes"))).toContain(
+        "Safer updates",
+      );
+      expect(
+        descendants(panel)
+          .filter(({ tagName }) => tagName === "button")
+          .map(visibleNotesText),
+      ).not.toContain(rendererSettingsMessages("en").updateAndRestart);
+      expect(client.startUpdate).not.toHaveBeenCalled();
+      cleanup?.();
+      scope.dispose();
+    },
+  );
+
   it("renders GitHub Release notes as structured Markdown", async () => {
     const client = {
       checkUpdate: vi.fn(async () => ({

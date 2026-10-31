@@ -4,9 +4,16 @@ import path from "node:path";
 import { EventEmitter } from "node:events";
 
 import { createBackgroundUpdateManager } from "@codexhost/update-manager";
+import type * as UpdateManager from "@codexhost/update-manager";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createConsoleUpdates, type ConsoleUpdateTarget } from "../src/updates.js";
+
+vi.mock("@codexhost/update-manager", async (importOriginal) => ({
+  ...(await importOriginal<typeof UpdateManager>()),
+  // Preserve the upstream updater checks; controlled-updates.test.ts covers this fork's policy.
+  UPDATE_INSTALLATION_DISABLED_REASON: null,
+}));
 
 let root: string;
 

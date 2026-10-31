@@ -328,6 +328,7 @@ function updatesPage(
       // should never be more than a glance away.
       const controls = document.createElement("div");
       controls.className = "settings-update-controls";
+      controls.hidden = true;
       const manualTitle = document.createElement("div");
       manualTitle.className = "settings-update-manual-title";
       manualTitle.textContent = messages.updateManualTitle;
@@ -439,6 +440,7 @@ function updatesPage(
       // Unavailable can follow a rendered check (Retry after an error), so it
       // restores the metadata and manual controls to their unchecked state.
       const renderUnavailable = (detail: string): void => {
+        controls.hidden = true;
         currentVersionValue.textContent = "-";
         latestVersionValue.textContent = "-";
         latestVersionValue.className = "";
@@ -577,6 +579,7 @@ function updatesPage(
           ? "settings-update-metadata__value--newer"
           : "";
         installationValue.textContent = installationLabel(result.installation, messages);
+        controls.hidden = Boolean(result.installationDisabledReason);
         manualNpm.hidden = result.installation !== "npm";
         manualWindowsInstaller.hidden = !windows || result.installation !== "windows-installer";
         releaseLink.hidden = windows;
@@ -632,8 +635,18 @@ function updatesPage(
           error.textContent = result.error;
           panel.append(error);
         }
+        if (result.installationDisabledReason) {
+          const notice = document.createElement("p");
+          notice.className = "settings-update-manual-description";
+          notice.textContent = result.installationDisabledReason;
+          panel.append(notice);
+        }
         const buttons: HTMLElement[] = [];
-        if (result.updateAvailable && result.installationAvailable) {
+        if (
+          result.updateAvailable &&
+          result.installationAvailable &&
+          !result.installationDisabledReason
+        ) {
           const update = document.createElement("button");
           update.type = "button";
           update.className = "settings-command-button";

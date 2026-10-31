@@ -56,6 +56,7 @@ export const updateCheckResultSchema = z.strictObject({
   latestVersion: updateSemanticVersionSchema.nullable(),
   updateAvailable: z.boolean(),
   installationAvailable: z.boolean(),
+  installationDisabledReason: z.string().min(1).max(UPDATE_ERROR_MAX_LENGTH).optional(),
   releaseNotes: z.string().min(1).max(20_000).nullable(),
   releaseNotesUrl: githubReleaseNotesUrlSchema.nullable(),
   status: updateStatusSchema.nullable(),

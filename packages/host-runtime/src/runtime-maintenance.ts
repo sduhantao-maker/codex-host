@@ -16,6 +16,7 @@ import {
 import { homedir } from "node:os";
 import path from "node:path";
 import {
+  UPDATE_INSTALLATION_DISABLED_REASON,
   compareSemanticVersions,
   defaultUpdateStateDirectory,
   readRuntimeMetadata,
@@ -120,6 +121,8 @@ export class RuntimeMaintenance {
   #sshPending = new Set<string>();
   async setupSsh(input: RemoteSshSetupParams): Promise<RemoteSshSetupResult> {
     if (this.options.remote) throw new Error("SSH installation must run from the local computer");
+    if (input.action === "update" && UPDATE_INSTALLATION_DISABLED_REASON)
+      throw new Error(UPDATE_INSTALLATION_DISABLED_REASON);
     const key = JSON.stringify([input.hostname, input.port, input.identity]);
     if (this.#sshPending.has(key))
       throw new Error("An SSH operation is already running for this connection");
@@ -248,11 +251,14 @@ export class RuntimeMaintenance {
       installedVersion: installed?.version ?? null,
       restartRequired,
       remote: this.options.remote,
-      updateSupported: !!resources && installed?.distribution === "npm",
+      updateSupported:
+        !UPDATE_INSTALLATION_DISABLED_REASON && !!resources && installed?.distribution === "npm",
       update: { ...this.#update },
     };
   }
   start(version: string): Promise<RuntimeStatus> {
+    if (UPDATE_INSTALLATION_DISABLED_REASON)
+      return Promise.reject(new Error(UPDATE_INSTALLATION_DISABLED_REASON));
     if (this.#starting) {
       if (this.#startingVersion !== version)
         return Promise.reject(new Error("Another remote update is already pending"));
