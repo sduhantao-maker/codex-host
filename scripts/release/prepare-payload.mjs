@@ -272,6 +272,7 @@ export function expectedPayloadPaths(target) {
     `libexec/codexhost-updater${target.executableSuffix}`,
     `runtime/node${target.executableSuffix}`,
     "app/codexhost-distribution.json",
+    "app/personal-build.json",
     "app/console-server.mjs",
     "app/console-web.js",
     "app/desktop-controller.mjs",

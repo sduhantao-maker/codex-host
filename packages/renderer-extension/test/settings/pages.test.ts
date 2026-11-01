@@ -2684,6 +2684,49 @@ describe("Renderer Updates page", () => {
     },
   );
 
+  it("shows personal build identity without changing semantic update data", async () => {
+    vi.resetModules();
+    const displayVersion = "0.16.1+sidechat.12345678";
+    vi.stubGlobal("__CODEXHOST_PERSONAL_BUILD_VERSION__", displayVersion);
+    const scopes: RendererSettingsPageScope[] = [];
+    try {
+      const { createDefaultRendererSettingsPages: personalPages } =
+        await import("../../src/settings/pages.js");
+      const response = {
+        ...updateCheck(),
+        currentVersion: "0.16.1",
+        latestVersion: "0.16.2",
+        updateAvailable: true,
+      };
+      const client = {
+        checkUpdate: vi.fn(async () => response),
+        startUpdate: vi.fn(),
+        readUpdateStatus: vi.fn(),
+      };
+      const pages = personalPages(rendererSettingsMessages("zh-CN"), () => client);
+      for (const id of ["about", "updates"]) {
+        const page = pages.find((item) => item.id === id);
+        if (!page) throw new Error("Personal build page is missing");
+        const content = new FakeDocument().createElement("main");
+        const scope = new RendererSettingsPageScope();
+        scopes.push(scope);
+        page.mount({
+          content: content as unknown as HTMLElement,
+          signal: scope.signal,
+          runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+        });
+        await vi.waitFor(() => expect(visibleText(content)).toContain(displayVersion));
+      }
+      expect(response.currentVersion).toBe("0.16.1");
+      expect(response.latestVersion).toBe("0.16.2");
+      expect(response.updateAvailable).toBe(true);
+    } finally {
+      for (const scope of scopes) scope.dispose();
+      vi.unstubAllGlobals();
+      vi.resetModules();
+    }
+  });
+
   it("renders the open-source project introduction on the About page", () => {
     const page = createDefaultRendererSettingsPages(rendererSettingsMessages("zh-CN")).find(
       ({ id }) => id === "about",
