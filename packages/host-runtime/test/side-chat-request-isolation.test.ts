@@ -20,13 +20,13 @@ import {
 describe("sidechat request admission isolation", () => {
   it("forwards main stop and approval while side-context fsync is stalled, but orders its own next Turn", async () => {
     const directory = mkdtempSync(path.join(os.tmpdir(), "sidechat-admission-"));
-    const entered = Promise.withResolvers<void>();
-    const release = Promise.withResolvers<void>();
+    const entered = Promise.withResolvers<undefined>();
+    const release = Promise.withResolvers<undefined>();
     const store = new MappingStore({
       directory,
       beforeReplace: async (record) => {
         if (Array.isArray(record.pendingInjectedText) && record.pendingInjectedText.length) {
-          entered.resolve();
+          entered.resolve(undefined);
           await release.promise;
         }
       },
@@ -84,7 +84,7 @@ describe("sidechat request admission isolation", () => {
       });
       await native.waitFor((message) => message.id === 700 && !!message.result);
       expect(execute).not.toHaveBeenCalled();
-      release.resolve();
+      release.resolve(undefined);
       const turnId = await starting;
       session.succeedTurn();
       await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
@@ -92,20 +92,20 @@ describe("sidechat request admission isolation", () => {
         { type: "text", text: "reference\n\nsynthetic" },
       ]);
     } finally {
-      release.resolve();
+      release.resolve(undefined);
       await stopFixture(fixture);
     }
   });
 
   it("hot-disable releases a stalled side Turn and late persistence cannot replay consumed context", async () => {
     const directory = mkdtempSync(path.join(os.tmpdir(), "sidechat-disable-"));
-    const entered = Promise.withResolvers<void>();
-    const release = Promise.withResolvers<void>();
+    const entered = Promise.withResolvers<undefined>();
+    const release = Promise.withResolvers<undefined>();
     const store = new MappingStore({
       directory,
       beforeReplace: async (record) => {
         if (Array.isArray(record.pendingInjectedText) && record.pendingInjectedText.length) {
-          entered.resolve();
+          entered.resolve(undefined);
           await release.promise;
         }
       },
@@ -145,7 +145,7 @@ describe("sidechat request admission isolation", () => {
       });
       const turnId = await starting;
       expect(execute).toHaveBeenCalledTimes(1);
-      release.resolve();
+      release.resolve(undefined);
       session.succeedTurn();
       await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
       expect(session.persistedSnapshot().turns[0]?.input).toEqual([
@@ -157,7 +157,7 @@ describe("sidechat request admission isolation", () => {
         ).toEqual([]),
       );
     } finally {
-      release.resolve();
+      release.resolve(undefined);
       await stopFixture(fixture);
     }
   });

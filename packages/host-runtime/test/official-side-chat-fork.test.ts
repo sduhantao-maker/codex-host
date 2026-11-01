@@ -229,6 +229,20 @@ describe("official Side Chat native Fork", () => {
     expect(f.store.registerSideChatOrigin).not.toHaveBeenCalled();
   });
 
+  it.each([
+    { id: "native-parent", forkedFromId: "native-parent" },
+    { id: "native-side", forkedFromId: "different-parent" },
+    { forkedFromId: "native-parent" },
+  ])("retains native success but skips unverified child metadata: %j", async (thread) => {
+    const f = fixture();
+    f.result.thread = thread;
+    expect(await forkOfficialSideChat({ threadId: "native-parent", attachToSource: true }, f)).toBe(
+      f.response,
+    );
+    expect(f.store.registerSideChatOrigin).not.toHaveBeenCalled();
+    expect(f.diagnose).toHaveBeenCalledOnce();
+  });
+
   it("returns a native temporary side chat instead of registering a false durable claim", async () => {
     const f = fixture();
     f.result.thread = { id: "native-side", forkedFromId: "native-parent", ephemeral: true };

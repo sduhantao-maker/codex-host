@@ -67,25 +67,13 @@ export async function forkOfficialSideChat(
   const child =
     record(response.result) && record(response.result.thread) ? response.result.thread : null;
   const childId = hostThreadIdSchema.safeParse(child?.id);
-  const failure = (message: string): JsonObject => ({
-    error: {
-      code: -32081,
-      message,
-      data: {
-        createdThreadId: childId.success ? childId.data : null,
-        sourceThreadId: sourceId.data,
-        nativeResult: response.result ?? null,
-      },
-    },
-  });
   if (
     !childId.success ||
     childId.data === sourceId.data ||
     (typeof child?.forkedFromId === "string" && child.forkedFromId !== sourceId.data)
   ) {
-    return failure(
-      "Native Fork returned an unexpected side chat identity; its response has been retained",
-    );
+    diagnose(new Error("Native Fork identity was unexpected; origin registration was skipped"));
+    return response;
   }
   if (child?.ephemeral === true) {
     diagnose(new Error("Native side chat remained ephemeral; no origin was registered"));
