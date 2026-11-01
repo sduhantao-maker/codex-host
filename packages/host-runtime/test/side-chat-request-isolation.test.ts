@@ -11,6 +11,7 @@ import {
   requestId,
   requiredMessageId,
   startPiThread,
+  startExternalThread,
   startPiTurn,
   stopFixture,
   writeRequest,
@@ -90,6 +91,73 @@ describe("sidechat request admission isolation", () => {
       await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
       expect(session.persistedSnapshot().turns[0]?.input).toEqual([
         { type: "text", text: "reference\n\nsynthetic" },
+      ]);
+    } finally {
+      release.resolve(undefined);
+      await stopFixture(fixture);
+    }
+  });
+
+  it("keeps external main approval, stop and another main send independent of side-context fsync", async () => {
+    const directory = mkdtempSync(path.join(os.tmpdir(), "sidechat-external-main-"));
+    const entered = Promise.withResolvers<undefined>();
+    const release = Promise.withResolvers<undefined>();
+    const store = new MappingStore({
+      directory,
+      beforeReplace: async (record) => {
+        if (Array.isArray(record.pendingInjectedText) && record.pendingInjectedText.length) {
+          entered.resolve(undefined);
+          await release.promise;
+        }
+      },
+    });
+    const fixture = createFixture({
+      mappingStore: store,
+      mappingStoreDirectory: directory,
+      sideChatFeatures: { persistentSideChats: true },
+    });
+    try {
+      const parentId = await startPiThread(fixture);
+      const parentTurn = await startPiTurn(fixture, parentId, 2);
+      const otherId = await startExternalThread(fixture, "codexhost/pi-native", 3);
+      const sideId = await startExternalThread(fixture, "codexhost/pi-native", 4);
+      const parent = fixture.adapter.sessions[0];
+      const other = fixture.adapter.sessions[1];
+      if (!parent || !other) throw new Error("Missing main Sessions");
+      parent.requestApproval("Allow synthetic action?");
+      const approval = await fixture.collector.waitFor(
+        (message) => message.method === "mcpServer/elicitation/request",
+      );
+      writeRequest(fixture.desktopInput, {
+        id: 5,
+        method: "thread/inject_items",
+        params: {
+          threadId: sideId,
+          items: [
+            { type: "message", role: "user", content: [{ type: "input_text", text: "side only" }] },
+          ],
+        },
+      });
+      await entered.promise;
+      writeRequest(fixture.desktopInput, {
+        id: requiredMessageId(approval),
+        result: { action: "accept", content: {} },
+      });
+      await vi.waitFor(() => expect(parent.interactionResponses).toHaveLength(1));
+      const otherTurn = await startPiTurn(fixture, otherId, 6);
+      writeRequest(fixture.desktopInput, {
+        id: 7,
+        method: "turn/interrupt",
+        params: { threadId: parentId, turnId: parentTurn },
+      });
+      expect(await fixture.collector.waitFor((message) => requestId(message, 7))).toMatchObject({
+        result: {},
+      });
+      release.resolve(undefined);
+      other.succeedTurn();
+      await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", otherTurn));
+      expect(other.persistedSnapshot().turns[0]?.input).toEqual([
+        { type: "text", text: "synthetic" },
       ]);
     } finally {
       release.resolve(undefined);
