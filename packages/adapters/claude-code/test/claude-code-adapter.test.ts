@@ -9,6 +9,7 @@ import {
   harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
   hostTurnIdSchema,
+  hostItemIdSchema,
   nativeCheckpointRefSchema,
   nativeSessionRefSchema,
   type HostInteractionId,
@@ -7926,7 +7927,7 @@ describe("Claude Code Workflow runs", () => {
 });
 
 describe("stable-v3 captured SDK generation steering replay", () => {
-  async function replay() {
+  async function replay(cancelQueued = true) {
     const { adapter, dependencies } = fixture({
       continuationQuiescenceMs: 10,
       cancelTimeoutMs: 200,
@@ -7965,18 +7966,28 @@ describe("stable-v3 captured SDK generation steering replay", () => {
     push({
       type: "system",
       subtype: "init",
-      capabilities: ["msg_lifecycle_v1", "interrupt_receipt_v1", "interrupt_cancel_queued_v1"],
+      capabilities: [
+        "msg_lifecycle_v1",
+        "interrupt_receipt_v1",
+        ...(cancelQueued ? ["interrupt_cancel_queued_v1"] : []),
+      ],
     });
     await vi.waitFor(() => expect(transport?.supportsNativeSteer()).toBe(true));
-    const partial = (messageId: string, text: string) =>
+    let segmentActive = true;
+    const queuedGuideIds = new Set<string>();
+    const partial = (messageId: string, text: string) => {
+      segmentActive = true;
       push({
         type: "stream_event",
         uuid: messageId,
         parent_tool_use_id: null,
         event: { type: "content_block_delta", delta: { type: "text_delta", text } },
       });
-    const result = (reason = "completed") =>
+    };
+    const result = (reason = "completed") => {
+      segmentActive = false;
       push({ type: "result", subtype: "success", is_error: false, terminal_reason: reason });
+    };
     const finish = (messageId: string, text: string) => {
       push({
         type: "assistant",
@@ -7991,11 +8002,21 @@ describe("stable-v3 captured SDK generation steering replay", () => {
       });
       result();
     };
-    const lifecycle = (messageId: string, state: string) =>
+    const lifecycle = (messageId: string, state: string) => {
+      if (state === "queued") queuedGuideIds.add(messageId);
+      if (state === "started") {
+        queuedGuideIds.delete(messageId);
+        segmentActive = true;
+      }
+      if (["cancelled", "discarded", "refused", "completed"].includes(state))
+        queuedGuideIds.delete(messageId);
       push({ type: "command_lifecycle", command_uuid: messageId, state });
-    query.interrupt.mockImplementation(async () => {
-      result("aborted_streaming");
-      return undefined;
+    };
+    query.interrupt.mockImplementation(async (options) => {
+      const cancelled = options?.cancelQueued ? [...queuedGuideIds] : [];
+      for (const messageId of cancelled) lifecycle(messageId, "cancelled");
+      if (segmentActive) result("aborted_streaming");
+      return { still_queued: [...queuedGuideIds], ...(options?.cancelQueued ? { cancelled } : {}) };
     });
     partial("root-answer", "Root answer.");
     await vi.waitFor(() =>
@@ -8015,20 +8036,18 @@ describe("stable-v3 captured SDK generation steering replay", () => {
       result,
       finish,
       lifecycle,
-      async acceptGuide(admitGeneration = false) {
-        // Only the proposed admission change is simulated; lifecycle/hold/cancel code stays real.
-        const admission = admitGeneration
-          ? vi.spyOn(sdkTransport, "canSteerActiveTurn").mockReturnValue(true)
-          : null;
+      queuedGuideIds,
+      async acceptGuide() {
+        const generation = sdkTransport.isGenerationSteer();
         const writes = vi.spyOn(sdkTransport, "steer");
         const accepted = session.execute({
           type: "turn.steer",
           turnId: hostTurnIdSchema.parse("replay-root"),
+          steerId: hostItemIdSchema.parse("guide-canonical-token"),
           input: [{ type: "text", text: "Guide original text." }],
         });
         const outgoing = await nextInput();
         const messageId = writes.mock.calls.at(-1)?.[1];
-        admission?.mockRestore();
         writes.mockRestore();
         if (!messageId) throw new Error("Missing written guide UUID");
         expect(outgoing).toMatchObject({
@@ -8039,7 +8058,10 @@ describe("stable-v3 captured SDK generation steering replay", () => {
           message: { content: "Guide original text." },
         });
         lifecycle(messageId, "queued");
-        await expect(accepted).resolves.toEqual({ ok: true, value: { accepted: true } });
+        await expect(accepted).resolves.toEqual({
+          ok: true,
+          value: { accepted: true, ...(generation ? { projection: "deferred" } : {}) },
+        });
         return messageId;
       },
       async close() {
@@ -8050,8 +8072,8 @@ describe("stable-v3 captured SDK generation steering replay", () => {
     };
   }
 
-  it("characterizes the current rejection of ordinary generation native steering", async () => {
-    const f = await replay();
+  it("preserves old-CLI generation rejection without queued-cancellation capability", async () => {
+    const f = await replay(false);
     try {
       expect(f.session.capabilities.steer).toBe(false);
       await expect(
@@ -8068,23 +8090,21 @@ describe("stable-v3 captured SDK generation steering replay", () => {
     }
   });
 
-  it.fails(
-    "A admission target remains red: generation should advertise native steering",
-    async () => {
-      const f = await replay();
-      try {
-        expect(f.session.capabilities.steer).toBe(true);
-      } finally {
-        f.finish("root-answer", "Root answer.");
-        await f.close();
-      }
-    },
-  );
+  it("advertises generation native steering only with reliable queued cancellation", async () => {
+    const f = await replay();
+    try {
+      expect(f.session.capabilities.steer).toBe(true);
+    } finally {
+      f.finish("root-answer", "Root answer.");
+      await f.close();
+    }
+  });
 
   it("keeps both captured successful native Segments in one Host Turn once the guide is admitted", async () => {
     const f = await replay();
     try {
-      const guideId = await f.acceptGuide(true);
+      const guideId = await f.acceptGuide();
+      expect(f.events().some((event) => event.type === "turn.steer.started")).toBe(false);
       f.finish("root-answer", "Root answer.");
       await vi.waitFor(() =>
         expect(f.events().some((event) => event.type === "item.completed")).toBe(true),
@@ -8096,6 +8116,7 @@ describe("stable-v3 captured SDK generation steering replay", () => {
       });
       f.lifecycle("original-command", "completed");
       f.lifecycle(guideId, "started");
+      f.lifecycle(guideId, "started");
       f.partial("guide-answer", "Guide answer.");
       f.finish("guide-answer", "Guide answer.");
       f.lifecycle(guideId, "completed");
@@ -8106,6 +8127,9 @@ describe("stable-v3 captured SDK generation steering replay", () => {
       });
       expect(f.events().some((event) => event.type === "turn.autonomous.started")).toBe(false);
       expect(f.outputs.some(hasUserMessageItem)).toBe(false);
+      expect(f.events().filter((event) => event.type === "turn.steer.started")).toEqual([
+        { type: "turn.steer.started", turnId: "replay-root", steerId: "guide-canonical-token" },
+      ]);
       const messages = f
         .events()
         .flatMap((event) =>
@@ -8120,6 +8144,77 @@ describe("stable-v3 captured SDK generation steering replay", () => {
     }
   });
 
+  it("cancels new generation input even when Stop arrives before the queued acknowledgement", async () => {
+    const f = await replay();
+    try {
+      const writes = vi.spyOn(f.transport, "steer");
+      const accepted = f.session.execute({
+        type: "turn.steer",
+        turnId: hostTurnIdSchema.parse("replay-root"),
+        steerId: hostItemIdSchema.parse("early-stop-guide"),
+        input: [{ type: "text", text: "Pending guide." }],
+      });
+      await f.nextInput();
+      const messageId = writes.mock.calls[0]?.[1];
+      writes.mockRestore();
+      if (!messageId) throw new Error("Missing written guide");
+      // Native owns this queued UUID, but its queued lifecycle frame has not reached the caller.
+      f.queuedGuideIds.add(messageId);
+      await f.session.execute({
+        type: "turn.cancel",
+        turnId: hostTurnIdSchema.parse("replay-root"),
+      });
+      await expect(accepted).resolves.toEqual({
+        ok: true,
+        value: { accepted: true, projection: "deferred" },
+      });
+      await vi.waitFor(() => expect(f.terminals()).toHaveLength(1));
+      expect(f.query.interrupt).toHaveBeenCalledWith({ cancelQueued: true });
+      expect(f.queuedGuideIds.size).toBe(0);
+      expect(f.events()).toContainEqual({
+        type: "turn.steer.cancelled",
+        turnId: "replay-root",
+        steerId: "early-stop-guide",
+        reason: "cancelled",
+      });
+      expect(
+        f
+          .events()
+          .some(
+            (event) =>
+              event.type === "turn.steer.started" || event.type === "turn.autonomous.started",
+          ),
+      ).toBe(false);
+      expect(f.terminals()[0]).toMatchObject({ outcome: { status: "cancelled" } });
+    } finally {
+      await f.close();
+    }
+  });
+
+  it("keeps the acceptance-time contract for legacy callers without a lifecycle token", async () => {
+    const f = await replay();
+    try {
+      const writes = vi.spyOn(f.transport, "steer");
+      const accepted = f.session.execute({
+        type: "turn.steer",
+        turnId: hostTurnIdSchema.parse("replay-root"),
+        input: [{ type: "text", text: "Legacy guide." }],
+      });
+      await f.nextInput();
+      const messageId = writes.mock.calls[0]?.[1];
+      writes.mockRestore();
+      if (!messageId) throw new Error("Missing written guide");
+      f.lifecycle(messageId, "queued");
+      await expect(accepted).resolves.toEqual({ ok: true, value: { accepted: true } });
+      f.finish("root-answer", "Root answer.");
+      f.lifecycle(messageId, "started");
+      f.finish("legacy-guide-answer", "Legacy guide answer.");
+      await vi.waitFor(() => expect(f.terminals()).toHaveLength(1));
+      expect(f.events().some((event) => event.type === "turn.steer.started")).toBe(false);
+    } finally {
+      await f.close();
+    }
+  });
   it("preserves genuine user-stop cancellation during generation", async () => {
     const f = await replay();
     try {
@@ -8172,6 +8267,7 @@ describe("stable-v3 captured SDK generation steering replay", () => {
         outcome: { status: "succeeded" },
       });
       expect(f.query.interrupt).not.toHaveBeenCalled();
+      expect(f.events().some((event) => event.type === "turn.steer.started")).toBe(false);
     } finally {
       await f.close();
     }
@@ -8286,7 +8382,7 @@ describe("stable-v3 captured SDK generation steering replay", () => {
   it("preserves user stop after the accepted guide starts its native Segment", async () => {
     const f = await replay();
     try {
-      const guideId = await f.acceptGuide(true);
+      const guideId = await f.acceptGuide();
       f.finish("root-answer", "Root answer.");
       await vi.waitFor(() => expect(f.transport.canSteerActiveTurn()).toBe(true));
       f.lifecycle(guideId, "started");
@@ -8312,57 +8408,45 @@ describe("stable-v3 captured SDK generation steering replay", () => {
     }
   });
 
-  it.fails(
-    "A held-stop target remains red: stop between native Segments must cancel queued guide immediately",
-    async () => {
-      const f = await replay();
-      try {
-        await f.acceptGuide(true);
-        f.finish("root-answer", "Root answer.");
-        await vi.waitFor(() => expect(f.transport.canSteerActiveTurn()).toBe(true));
-        expect(f.terminals()).toHaveLength(0);
-        await f.session.execute({
-          type: "turn.cancel",
-          turnId: hostTurnIdSchema.parse("replay-root"),
-        });
-        expect(f.query.interrupt).toHaveBeenCalledOnce();
-      } finally {
-        await f.close();
-      }
-    },
-  );
-  it.fails(
-    "A stop target remains red: an admitted but undrained guide must not reopen a cancelled Turn",
-    async () => {
-      const f = await replay();
-      try {
-        const guideId = await f.acceptGuide(true);
-        await f.session.execute({
-          type: "turn.cancel",
-          turnId: hostTurnIdSchema.parse("replay-root"),
-        });
-        await vi.waitFor(() => expect(f.terminals()).toHaveLength(1));
-        f.lifecycle(guideId, "started");
-        f.partial("late-guide-answer", "Late guide answer.");
-        f.finish("late-guide-answer", "Late guide answer.");
-        f.lifecycle(guideId, "completed");
-        await vi.waitFor(() =>
-          expect(
-            f
-              .events()
-              .some(
-                (event) =>
-                  event.type === "item.completed" &&
-                  event.snapshot.item.type === "agentMessage" &&
-                  event.snapshot.item.text === "Late guide answer.",
-              ),
-          ).toBe(true),
-        );
-        expect(f.events().some((event) => event.type === "turn.autonomous.started")).toBe(false);
-        expect(f.terminals()).toHaveLength(1);
-      } finally {
-        await f.close();
-      }
-    },
-  );
+  it("stops immediately between native Segments and cancels the queued guide", async () => {
+    const f = await replay();
+    try {
+      await f.acceptGuide();
+      f.finish("root-answer", "Root answer.");
+      await vi.waitFor(() => expect(f.transport.canSteerActiveTurn()).toBe(true));
+      expect(f.terminals()).toHaveLength(0);
+      await f.session.execute({
+        type: "turn.cancel",
+        turnId: hostTurnIdSchema.parse("replay-root"),
+      });
+      expect(f.query.interrupt).toHaveBeenCalledOnce();
+    } finally {
+      await f.close();
+    }
+  });
+  it("cancels an admitted but undrained guide without reopening a cancelled Turn", async () => {
+    const f = await replay();
+    try {
+      const guideId = await f.acceptGuide();
+      await f.session.execute({
+        type: "turn.cancel",
+        turnId: hostTurnIdSchema.parse("replay-root"),
+      });
+      await vi.waitFor(() => expect(f.terminals()).toHaveLength(1));
+      expect(f.query.interrupt).toHaveBeenCalledWith({ cancelQueued: true });
+      expect(f.queuedGuideIds.has(guideId)).toBe(false);
+      expect(f.transport.hasPendingGenerationSteers()).toBe(false);
+      expect(f.events()).toContainEqual({
+        type: "turn.steer.cancelled",
+        turnId: "replay-root",
+        steerId: "guide-canonical-token",
+        reason: "cancelled",
+      });
+      expect(f.events().some((event) => event.type === "turn.steer.started")).toBe(false);
+      expect(f.events().some((event) => event.type === "turn.autonomous.started")).toBe(false);
+      expect(f.terminals()).toHaveLength(1);
+    } finally {
+      await f.close();
+    }
+  });
 });

@@ -3531,3 +3531,176 @@ describe("ClaudeSdkTransport steer", () => {
     await expect(steered).rejects.not.toBeInstanceOf(ClaudeSteerMissedTurnError);
   });
 });
+
+describe("generation steering cancellation capability", () => {
+  async function generation(value: ReturnType<typeof fixture>, cancelQueued: boolean) {
+    await value.transport.start();
+    const turn = value.transport.runTurn("Root prompt", "root-command", () => undefined);
+    value.fakeQuery.push({
+      type: "system",
+      subtype: "init",
+      capabilities: ["msg_lifecycle_v1", ...(cancelQueued ? ["interrupt_cancel_queued_v1"] : [])],
+    } as unknown as SDKMessage);
+    await vi.waitFor(() => expect(value.transport.supportsNativeSteer()).toBe(true));
+    expect(value.transport.canSteerActiveTurn()).toBe(false);
+    pushPartialText(value.fakeQuery, "Root text.");
+    await delay(0);
+    return { turn };
+  }
+
+  it.each([false, true])(
+    "gates new text-generation admission on queued cancellation support=%s",
+    async (supported) => {
+      const value = fixture();
+      const { turn } = await generation(value, supported);
+      expect(value.transport.canSteerActiveTurn()).toBe(supported);
+      expect(value.transport.isGenerationSteer()).toBe(supported);
+      completeTurn(value.fakeQuery);
+      await turn;
+      await value.transport.close();
+    },
+  );
+
+  it("does not widen admission during compaction or after the root text message completes", async () => {
+    const value = fixture();
+    const { turn } = await generation(value, true);
+    expect(value.transport.isGenerationSteer()).toBe(true);
+    value.fakeQuery.push({
+      type: "system",
+      subtype: "status",
+      status: "compacting",
+    } as unknown as SDKMessage);
+    await vi.waitFor(() => expect(value.transport.isGenerationSteer()).toBe(false));
+    value.fakeQuery.push({
+      type: "system",
+      subtype: "status",
+      compact_result: "success",
+    } as unknown as SDKMessage);
+    value.fakeQuery.push({
+      type: "stream_event",
+      parent_tool_use_id: null,
+      event: { type: "message_start", message: { id: "after-compaction-message" } },
+    } as unknown as SDKMessage);
+    pushPartialText(value.fakeQuery, "New root text.", "after-compaction-message");
+    await vi.waitFor(() => expect(value.transport.isGenerationSteer()).toBe(true));
+    pushAssistantText(value.fakeQuery, "New root text.", "after-compaction-message");
+    await vi.waitFor(() => expect(value.transport.isGenerationSteer()).toBe(false));
+    completeTurn(value.fakeQuery);
+    await turn;
+    await value.transport.close();
+  });
+
+  it("cancels only new queued-generation input through the public SDK option", async () => {
+    const value = fixture();
+    const { turn } = await generation(value, true);
+    const guideId = "generation-guide";
+    const takeover = vi.fn();
+    const accepted = value.transport.steer("Guide", guideId, takeover);
+    value.fakeQuery.push({
+      type: "command_lifecycle",
+      command_uuid: guideId,
+      state: "queued",
+    } as unknown as SDKMessage);
+    await accepted;
+    value.fakeQuery.interrupt.mockImplementation(async (options) => {
+      expect(options).toEqual({ cancelQueued: true });
+      value.fakeQuery.push({
+        type: "command_lifecycle",
+        command_uuid: guideId,
+        state: "cancelled",
+      } as unknown as SDKMessage);
+      value.fakeQuery.push({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        terminal_reason: "aborted_streaming",
+      } as unknown as SDKMessage);
+      return { still_queued: [], cancelled: [guideId] };
+    });
+    await value.transport.abort();
+    await expect(turn).resolves.toMatchObject({ status: "cancelled" });
+    expect(value.fakeQuery.interrupt).toHaveBeenCalledWith({ cancelQueued: true });
+    expect(takeover).toHaveBeenCalledWith(false, "cancelled");
+    expect(value.transport.hasPendingGenerationSteers()).toBe(false);
+    await value.transport.close();
+  });
+
+  it("preserves the zero-argument SDK interrupt when no new generation input is queued", async () => {
+    const value = fixture();
+    const { turn } = await generation(value, true);
+    value.fakeQuery.interrupt.mockImplementation(async () => {
+      value.fakeQuery.push({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        terminal_reason: "aborted_streaming",
+      } as unknown as SDKMessage);
+      return { still_queued: [] };
+    });
+    await value.transport.abort();
+    await turn;
+    expect(value.fakeQuery.interrupt).toHaveBeenCalledWith();
+    await value.transport.close();
+  });
+
+  it("keeps tracking an accepted generation guide when its queued acknowledgement times out", async () => {
+    const base = fixture();
+    const transport = new ClaudeSdkTransport({
+      command: process.execPath,
+      cwd: process.cwd(),
+      sessionId: "replay-session",
+      openMode: "create",
+      permissionMode: "default",
+      thinkingOptionId: harnessThinkingOptionIdSchema.parse("auto"),
+      closeTimeoutMs: 100,
+      steerQueuedTimeoutMs: 10,
+      onPermissionModeChanged: base.onPermissionModeChanged,
+      onFault: base.onFault,
+      onPlanLimit: base.onPlanLimit,
+      queryFactory: base.queryFactory,
+    });
+    const value = { ...base, transport };
+    const { turn } = await generation(value, true);
+    const takeover = vi.fn();
+    await transport.steer("Guide", "guide-no-queued-receipt", takeover);
+    expect(transport.hasPendingGenerationSteers()).toBe(true);
+    expect(takeover).not.toHaveBeenCalled();
+    completeTurn(value.fakeQuery);
+    await turn;
+    value.fakeQuery.push({
+      type: "command_lifecycle",
+      command_uuid: "guide-no-queued-receipt",
+      state: "started",
+    } as unknown as SDKMessage);
+    await vi.waitFor(() => expect(takeover).toHaveBeenCalledWith(true));
+    expect(transport.hasPendingGenerationSteers()).toBe(false);
+    await transport.close();
+  });
+
+  it("leaves native stdin bytes, request IDs and non-interrupt frames untouched", async () => {
+    const value = fixture();
+    await value.transport.start();
+    const spawnProcess = options(value).spawnClaudeCodeProcess;
+    if (!spawnProcess) throw new Error("Missing SDK process hook");
+    const child = spawnProcess({
+      command: process.execPath,
+      args: ["-e", "process.stdin.pipe(process.stdout)"],
+      cwd: process.cwd(),
+      env: process.env,
+      signal: new AbortController().signal,
+    }) as ChildProcessWithoutNullStreams;
+    const received: Buffer[] = [];
+    child.stdout.on("data", (chunk: Buffer) => received.push(chunk));
+    const bytes = Buffer.from(
+      ' {"type":"control_request","request_id":"native-request-id","request":{"subtype":"interrupt"}}\n{"type":"control_request","request_id":"other-id","request":{"subtype":"set_model","model":"synthetic"}}\n{"type":"user","uuid":"native-user-id","message":{"role":"user","content":"字节回放"}}\n',
+    );
+    try {
+      child.stdin.write(bytes.subarray(0, 17));
+      child.stdin.end(bytes.subarray(17));
+      await once(child, "exit");
+      expect(Buffer.concat(received)).toEqual(bytes);
+    } finally {
+      await value.transport.close();
+    }
+  });
+});
