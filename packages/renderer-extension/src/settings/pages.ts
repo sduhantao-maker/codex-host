@@ -325,6 +325,13 @@ function updatesPage(
       const currentVersionValue = createMetadataItem(messages.updateCurrentVersion);
       const latestVersionValue = createMetadataItem(messages.updateLatestVersion);
       const installationValue = createMetadataItem(messages.updateInstallation);
+      if (PERSONAL_BUILD_VERSION) {
+        const build = createMetadataItem(
+          messages.locale === "zh-CN" ? "个人构建" : "Personal build",
+        );
+        build.className += " settings-update-personal-build";
+        build.textContent = PERSONAL_BUILD_VERSION;
+      }
 
       const panel = document.createElement("section");
       panel.className = "settings-update-panel";
@@ -580,7 +587,7 @@ function updatesPage(
           renderUnavailable(messages.runtimeCapabilityNotInstalled);
           return;
         }
-        currentVersionValue.textContent = `v${PERSONAL_BUILD_VERSION ?? result.currentVersion}`;
+        currentVersionValue.textContent = `v${result.currentVersion}`;
         latestVersionValue.textContent = result.latestVersion ? `v${result.latestVersion}` : "-";
         latestVersionValue.className = result.updateAvailable
           ? "settings-update-metadata__value--newer"

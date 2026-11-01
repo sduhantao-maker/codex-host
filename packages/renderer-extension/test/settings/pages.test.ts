@@ -2694,7 +2694,7 @@ describe("Renderer Updates page", () => {
         await import("../../src/settings/pages.js");
       const response = {
         ...updateCheck(),
-        currentVersion: "0.16.1",
+        currentVersion: "0.15.9",
         latestVersion: "0.16.2",
         updateAvailable: true,
       };
@@ -2716,8 +2716,12 @@ describe("Renderer Updates page", () => {
           runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
         });
         await vi.waitFor(() => expect(visibleText(content)).toContain(displayVersion));
+        if (id === "updates") {
+          await vi.waitFor(() => expect(visibleText(content)).toContain("v0.15.9"));
+          expect(visibleText(content)).toContain("个人构建");
+        }
       }
-      expect(response.currentVersion).toBe("0.16.1");
+      expect(response.currentVersion).toBe("0.15.9");
       expect(response.latestVersion).toBe("0.16.2");
       expect(response.updateAvailable).toBe(true);
     } finally {
