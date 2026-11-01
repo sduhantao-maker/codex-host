@@ -99,7 +99,7 @@ export function installRendererSideChatControls(
       return response;
     });
   };
-  const run = async (action: (signal: AbortSignal) => Promise<void>) => {
+  const run = async (action: (signal: AbortSignal) => Promise<unknown>) => {
     if (operation) return;
     const current = new AbortController();
     operation = current;
@@ -107,23 +107,29 @@ export function installRendererSideChatControls(
       item.disabled = true;
     status.textContent = "正在处理…";
     try {
-      await action(current.signal);
-      if (!disposed && dialog.open) await refresh();
+      const notice = await action(current.signal);
+      if (!disposed && !current.signal.aborted && dialog.open) {
+        await refresh();
+        if (typeof notice === "string") status.textContent = notice;
+      }
     } catch (error) {
       if (!current.signal.aborted && !disposed)
         status.textContent = error instanceof Error ? error.message : "操作未完成，记录已保留";
     } finally {
-      if (operation === current) operation = null;
-      for (const item of dialog.querySelectorAll<HTMLButtonElement>("li button"))
-        item.disabled = item.dataset.sidechatUnavailable === "true";
+      if (operation === current) {
+        operation = null;
+        for (const item of dialog.querySelectorAll<HTMLButtonElement>("li button"))
+          item.disabled = item.dataset.sidechatUnavailable === "true";
+      }
     }
   };
   const render = (entry: SideChatEntry, sourceTitle: string | null, projectName: string | null) => {
     const sourceAvailable = entry.sourceAvailable !== false;
+    const archived = entry.archived === true;
     const item = document.createElement("li");
     const label = document.createElement("span");
     label.className = "sidechat-title";
-    label.textContent = entry.title || "侧边聊天";
+    label.textContent = `${archived ? "已归档 · " : ""}${entry.title || "侧边聊天"}`;
     const source = document.createElement("p");
     source.className = "sidechat-source";
     source.textContent = sourceAvailable
@@ -132,15 +138,36 @@ export function installRendererSideChatControls(
     const actions = document.createElement("div");
     actions.className = "sidechat-actions";
     actions.append(
-      button(sourceAvailable ? "继续侧聊" : "打开原侧聊", () => {
+      button(
+        sourceAvailable ? "继续侧聊" : "打开原侧聊",
+        () => {
+          void run(async (signal) => {
+            await native.reopen(entry, hostId, signal);
+            dialog.close();
+          });
+        },
+        archived,
+      ),
+      button(
+        entry.collected ? "取消收纳" : "收纳",
+        () => {
+          void run(async () => {
+            await library().collect(entry.threadId, !entry.collected);
+          });
+        },
+        archived,
+      ),
+      button(archived ? "解除归档" : "归档", () => {
         void run(async (signal) => {
-          await native.reopen(entry, hostId, signal);
-          dialog.close();
-        });
-      }),
-      button(entry.collected ? "取消收纳" : "收纳", () => {
-        void run(async () => {
-          await library().collect(entry.threadId, !entry.collected);
+          const { collectionUpdated } = await library().setArchived(entry, !archived);
+          if (signal.aborted) return;
+          return collectionUpdated
+            ? archived
+              ? "侧聊已解除归档。"
+              : "侧聊已归档，可从原生归档列表找回。"
+            : archived
+              ? "侧聊已解除归档；收纳状态暂未同步，请刷新。"
+              : "侧聊已归档；收纳状态暂未同步，可从原生归档列表管理。";
         });
       }),
       button(
@@ -162,7 +189,7 @@ export function installRendererSideChatControls(
             dialog.close();
           });
         },
-        !sourceAvailable,
+        !sourceAvailable || archived,
       ),
     );
     if (entry.projectId && sourceAvailable)

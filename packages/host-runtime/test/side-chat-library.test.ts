@@ -170,6 +170,120 @@ describe("side chat library", () => {
     expect((await library.list()).items).toEqual([item]);
   });
 
+  it.each(["native", "external"])(
+    "retains %s side-chat origin through archive, restart, and restore",
+    async (threadId) => {
+      const { library, rows, attached, store, directory, readThread, listAttached } =
+        await fixture();
+      await library.update({ threadId: id(threadId), collected: true });
+      const [original] = await store.listSideChatCollection();
+      attached.set(
+        "parent",
+        ["native", "external"].filter((value) => value !== threadId),
+      );
+      if (threadId === "external")
+        rows.set(threadId, { ...rows.get(threadId), id: threadId, codexhostArchived: true });
+      const nativeState = JSON.stringify([...rows]);
+      expect(
+        await library.update({ threadId: id(threadId), collected: false, archived: true }),
+      ).toMatchObject({
+        item: { threadId, sourceThreadId: "parent", projectId: "project-a", archived: true },
+      });
+      expect(await library.list()).toEqual({ items: [] });
+      const [saved] = await store.listSideChatCollection();
+      expect(saved).toEqual({
+        threadId,
+        sourceThreadId: "parent",
+        projectId: "project-a",
+        registeredAt: original?.registeredAt,
+        archived: true,
+      });
+      expect(JSON.stringify([...rows])).toBe(nativeState);
+
+      await store.close();
+      const restarted = new MappingStore({ directory });
+      await restarted.initialize();
+      cleanup.push(() => restarted.close());
+      const restored = new SideChatLibrary({ store: restarted, readThread, listAttached });
+      expect((await restored.list({ sourceThreadId: id("parent") })).items).toContainEqual(
+        expect.objectContaining({ threadId, sourceThreadId: "parent", archived: true }),
+      );
+      rows.delete("parent");
+      expect((await restored.list({ sourceThreadId: id("parent") })).items).toContainEqual(
+        expect.objectContaining({ threadId, sourceThreadId: "parent", sourceAvailable: false }),
+      );
+      expect(await restarted.listSideChatCollection()).toEqual([saved]);
+
+      rows.set("parent", { id: "parent", projectId: "project-a" });
+      attached.set("parent", ["native", "external"]);
+      if (threadId === "external")
+        rows.set(threadId, { ...rows.get(threadId), id: threadId, codexhostArchived: false });
+      await restored.update({ threadId: id(threadId), collected: false, archived: false });
+      await restored.update({ threadId: id(threadId), collected: true });
+      expect((await restored.list()).items).toContainEqual(
+        expect.objectContaining({ threadId, sourceThreadId: "parent", collected: true }),
+      );
+      expect(await restarted.listSideChatCollection()).toMatchObject([
+        {
+          threadId,
+          sourceThreadId: "parent",
+          registeredAt: original?.registeredAt,
+          archived: false,
+        },
+      ]);
+    },
+  );
+
+  it("registers an uncollected native side before archive removes its only attachment", async () => {
+    const { library, store, attached } = await fixture();
+    expect(await store.listSideChatCollection()).toEqual([]);
+    const entry = (await library.list({ sourceThreadId: id("parent") })).items.find(
+      (item) => item.threadId === "native",
+    );
+    expect(entry).toMatchObject({ threadId: "native", collected: false });
+    await library.update({ threadId: id("native"), collected: false });
+    attached.set("parent", ["external"]);
+    await library.update({ threadId: id("native"), collected: false, archived: true });
+    expect((await library.list({ sourceThreadId: id("parent") })).items).toContainEqual(
+      expect.objectContaining({ threadId: "native", sourceThreadId: "parent", archived: true }),
+    );
+    expect(await store.listSideChatCollection()).toMatchObject([
+      { threadId: "native", sourceThreadId: "parent", projectId: "project-a", archived: true },
+    ]);
+  });
+
+  it("uses restored native attachments consistently in parent and global views", async () => {
+    const { library, store, attached } = await fixture();
+    await library.update({ threadId: id("native"), collected: true, archived: true });
+    attached.set("parent", ["external"]);
+    expect(await library.list()).toEqual({ items: [] });
+    attached.set("parent", ["native", "external"]);
+    for (const query of [{}, { sourceThreadId: id("parent") }]) {
+      const item = (await library.list(query)).items.find((entry) => entry.threadId === "native");
+      expect(item).toMatchObject({ threadId: "native", collected: true });
+      expect(item?.archived).toBeUndefined();
+    }
+    await library.update({ threadId: id("native"), collected: true });
+    expect((await store.listSideChatCollection())[0]?.archived).toBe(false);
+  });
+
+  it("uses external native archive state over stale collection hints", async () => {
+    const { library, store, rows, attached } = await fixture();
+    await library.update({ threadId: id("external"), collected: true, archived: true });
+    attached.set("parent", ["native"]);
+    rows.set("external", { ...rows.get("external"), id: "external", codexhostArchived: false });
+    expect((await library.list()).items).toContainEqual(
+      expect.objectContaining({ threadId: "external", collected: true }),
+    );
+    await library.update({ threadId: id("external"), collected: true });
+    expect((await store.listSideChatCollection())[0]?.archived).toBe(false);
+    rows.set("external", { ...rows.get("external"), id: "external", codexhostArchived: true });
+    expect(await library.list()).toEqual({ items: [] });
+    expect((await library.list({ sourceThreadId: id("parent") })).items).toContainEqual(
+      expect.objectContaining({ threadId: "external", archived: true }),
+    );
+  });
+
   it("omits unreadable collected entries without deleting their index", async () => {
     const { library, store, rows, readThread } = await fixture();
     await library.update({ threadId: id("native"), collected: true });

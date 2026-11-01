@@ -20,6 +20,19 @@ function result(value: unknown): Record<string, unknown> {
 
 /** The Host index stores organization only; reads and updates never append parent context. */
 export function createSideChatLibrary(request: SideChatRequest) {
+  const collect = async (threadId: string, collected: boolean): Promise<SideChatEntry> => {
+    const response = sideChatUpdateResultSchema.parse(
+      result(await request(SIDE_CHAT_UPDATE_METHOD, { threadId, collected })),
+    );
+    const item = response.item;
+    if (
+      item.threadId !== threadId ||
+      item.collected !== collected ||
+      item.threadId === item.sourceThreadId
+    )
+      throw new Error("侧聊收纳状态未确认");
+    return item;
+  };
   return {
     async list(sourceThreadId?: string): Promise<SideChatEntry[]> {
       const response = sideChatListResultSchema.parse(
@@ -42,18 +55,42 @@ export function createSideChatLibrary(request: SideChatRequest) {
         throw new Error("侧聊不属于当前主对话");
       return entries;
     },
-    async collect(threadId: string, collected: boolean): Promise<SideChatEntry> {
-      const response = sideChatUpdateResultSchema.parse(
-        result(await request(SIDE_CHAT_UPDATE_METHOD, { threadId, collected })),
-      );
-      const item = response.item;
-      if (
-        item.threadId !== threadId ||
-        item.collected !== collected ||
-        item.threadId === item.sourceThreadId
-      )
-        throw new Error("侧聊收纳状态未确认");
-      return item;
+    collect,
+    async setArchived(
+      entry: SideChatEntry,
+      archived: boolean,
+    ): Promise<{ collectionUpdated: boolean }> {
+      const { threadId } = entry;
+      try {
+        // Native archive can remove the only attachment proving an unregistered side chat's source.
+        await collect(threadId, entry.collected);
+      } catch {
+        result(await request(archived ? "thread/archive" : "thread/unarchive", { threadId }));
+        return { collectionUpdated: false };
+      }
+      result(await request(archived ? "thread/archive" : "thread/unarchive", { threadId }));
+      try {
+        const response = sideChatUpdateResultSchema.parse(
+          result(
+            await request(SIDE_CHAT_UPDATE_METHOD, {
+              threadId,
+              collected: false,
+              archived,
+            }),
+          ),
+        );
+        if (
+          response.item.threadId !== threadId ||
+          response.item.sourceThreadId === threadId ||
+          (response.item.archived === true) !== archived ||
+          response.item.collected
+        )
+          throw new Error("Side chat archive metadata was not confirmed");
+        return { collectionUpdated: true };
+      } catch {
+        // The native action already succeeded; metadata failure must not invite duplicate actions.
+        return { collectionUpdated: false };
+      }
     },
     async sourceTitle(threadId: string): Promise<string | null> {
       const response = result(await request("thread/read", { threadId, includeTurns: false }));

@@ -11,18 +11,20 @@ const { outputFiles } = await build({
       import { installRendererSideChatFeatures } from './packages/renderer-extension/src/renderer-sidechat-features.ts';
       window.setup = () => {
         let collected = false;
+        let archived = false;
         const calls = [];
         const scope = { node: {}, chain: [], scope: {}, value: { routeKind: 'local-thread', conversationId: 'parent-1', hostId: 'local' }, get() {}, set() {}, watch() {} };
         document.querySelector('main').__reactFiber$test = { memoizedState: { memoizedState: { current: scope }, next: null } };
-        const row = () => ({ threadId: 'side-1', sourceThreadId: 'parent-1', projectId: window.orphan ? null : 'project-1', title: '<img src=x onerror=alert(1)>', collected, ...(window.orphan ? {sourceAvailable: false} : {}) });
+        const row = () => ({ threadId: 'side-1', sourceThreadId: 'parent-1', projectId: window.orphan ? null : 'project-1', title: '<img src=x onerror=alert(1)>', collected, ...(archived ? {archived:true} : {}), ...(window.orphan ? {sourceAvailable: false} : {}) });
         let release;
         let featureEnabled = false;
         const route = { hostId: 'local', manager: { async sendRequest(method, params) {
           calls.push({method, params});
           if (method === 'codexhost/sideChat/features/get') return { settings: {persistentSideChats:false,sideChatLibrary:featureEnabled,claudeActiveSideChatFork:false}, capabilities: {persistentSideChats:true,sideChatLibrary:true,claudeActiveSideChatFork:true} };
           if (window.hold && method === 'codexhost/sideChat/list') await new Promise(r => release = r);
-          if (method === 'codexhost/sideChat/list') return { items: params.sourceThreadId || collected ? [row()] : [] };
-          if (method === 'codexhost/sideChat/update') { if (window.failUpdate) throw new Error('保存失败'); collected = params.collected; return { item: row() }; }
+          if (method === 'codexhost/sideChat/list') return { items: params.sourceThreadId || (collected && !archived) ? [row()] : [] };
+          if (method === 'codexhost/sideChat/update') { if (window.failUpdate) throw new Error('保存失败'); collected = params.collected; if(typeof params.archived==='boolean')archived=params.archived; return { item: row() }; }
+          if (method === 'thread/archive' || method === 'thread/unarchive') { window.nativeArchived=method==='thread/archive'; return {}; }
           if (method === 'thread/read') return { thread: { id: params.threadId, name: '原主对话', cwd: '/work/project' } };
           if (method === 'project/read') return { project: { id: 'project-1', name: '研究项目' } };
           throw new Error('Unexpected write: '+method);
@@ -240,4 +242,53 @@ test("an orphan remains visible and removable while unavailable source actions s
     },
     { method: "codexhost/sideChat/update", params: { threadId: "side-1", collected: false } },
   ]);
+});
+
+test("archives and restores only the side chat through its native owner", async ({ page }) => {
+  await page.getByRole("button", { name: "侧聊收纳", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "侧聊收纳" });
+  await dialog.getByRole("button", { name: "当前主对话的侧聊" }).click();
+  await dialog.getByRole("button", { name: "收纳", exact: true }).click();
+  await dialog.getByRole("button", { name: "归档", exact: true }).click();
+  await expect(dialog).toContainText("已归档 ·");
+  await expect(dialog.getByRole("button", { name: "继续侧聊", exact: true })).toBeDisabled();
+  await expect(dialog.getByRole("button", { name: "打开原主对话", exact: true })).toBeEnabled();
+  await expect(dialog.getByRole("button", { name: "转为独立主对话", exact: true })).toBeDisabled();
+  await dialog.getByRole("button", { name: "已收纳", exact: true }).click();
+  await expect(dialog).toContainText("还没有收纳的侧聊");
+  await dialog.getByRole("button", { name: "当前主对话的侧聊" }).click();
+  await dialog.getByRole("button", { name: "解除归档", exact: true }).click();
+  await expect(dialog.getByRole("button", { name: "继续侧聊", exact: true })).toBeEnabled();
+  const calls = await page.evaluate(
+    () => (window as unknown as { calls: { method: string; params: unknown }[] }).calls,
+  );
+  expect(
+    calls.filter((call) => call.method === "thread/archive" || call.method === "thread/unarchive"),
+  ).toEqual([
+    { method: "thread/archive", params: { threadId: "side-1" } },
+    { method: "thread/unarchive", params: { threadId: "side-1" } },
+  ]);
+  expect(
+    calls.some((call) => /turn\/(start|steer)|inject_items|thread\/delete/.test(call.method)),
+  ).toBe(false);
+});
+
+test("keeps native archive success visible when collection synchronization fails", async ({
+  page,
+}) => {
+  await page.getByRole("button", { name: "侧聊收纳", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "侧聊收纳" });
+  await dialog.getByRole("button", { name: "当前主对话的侧聊" }).click();
+  await page.evaluate(() => {
+    (window as unknown as { failUpdate: boolean }).failUpdate = true;
+  });
+  await dialog.getByRole("button", { name: "归档", exact: true }).click();
+  await expect(dialog.getByRole("status")).toContainText("侧聊已归档；收纳状态暂未同步");
+  const calls = await page.evaluate(
+    () => (window as unknown as { calls: { method: string }[] }).calls,
+  );
+  expect(calls.filter((call) => call.method === "thread/archive")).toHaveLength(1);
+  expect(
+    await page.evaluate(() => (window as unknown as { nativeArchived: boolean }).nativeArchived),
+  ).toBe(true);
 });

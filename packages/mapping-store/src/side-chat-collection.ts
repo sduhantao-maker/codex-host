@@ -11,6 +11,7 @@ export const storedSideChatCollectionEntrySchema = z
     projectId: z.string().min(1).max(1_024).nullable(),
     collectedAt: z.string().datetime({ offset: true }).optional(),
     registeredAt: z.string().datetime({ offset: true }).optional(),
+    archived: z.boolean().optional(),
   })
   .passthrough()
   .refine((entry) => entry.threadId !== entry.sourceThreadId, {

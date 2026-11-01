@@ -103,9 +103,13 @@ export class SideChatLibrary {
     if (source && provenance.sourceThreadId !== source.id) return null;
     if (saved && saved.sourceThreadId !== provenance.sourceThreadId) return null;
     const parent = source ? source.row : await this.#read(provenance.sourceThreadId);
+    const attached =
+      source?.attached ??
+      (!provenance.external && (!saved || (saved.archived && row.codexhostArchived === undefined))
+        ? await this.#attached(provenance.sourceThreadId)
+        : undefined);
     if (!provenance.external && !saved) {
-      const attached = source?.attached ?? (await this.#attached(provenance.sourceThreadId));
-      if (!attached.has(threadId)) return null;
+      if (!attached?.has(threadId)) return null;
     }
     const projectId = !parent
       ? null
@@ -121,6 +125,10 @@ export class SideChatLibrary {
       projectId,
       title: typeof title === "string" ? title : "Side chat",
       collected: saved?.collectedAt !== undefined,
+      ...(row.codexhostArchived === true ||
+      (row.codexhostArchived === undefined && !attached?.has(threadId) && saved?.archived)
+        ? { archived: true }
+        : {}),
       ...(!parent ? { sourceAvailable: false } : {}),
     };
   }
@@ -141,13 +149,15 @@ export class SideChatLibrary {
           .map((entry) => this.#item(entry.threadId, entry)),
       );
       assertScope();
-      return { items: items.filter((item): item is SideChatLibraryItem => item !== null) };
+      return {
+        items: items.filter((item): item is SideChatLibraryItem => item !== null && !item.archived),
+      };
     }
     const parent = await this.#read(params.sourceThreadId);
     const source = {
       id: params.sourceThreadId,
       row: parent,
-      attached: parent ? await this.#attached(params.sourceThreadId) : new Set<HostThreadId>(),
+      attached: await this.#attached(params.sourceThreadId),
     };
     const candidates = new Set([
       ...source.attached,
@@ -187,11 +197,22 @@ export class SideChatLibrary {
         saved?.registeredAt ??
         saved?.collectedAt ??
         (this.options.now?.() ?? new Date()).toISOString(),
+      ...(params.archived !== undefined
+        ? { archived: params.archived }
+        : saved?.archived !== undefined
+          ? { archived: item.archived === true }
+          : {}),
       ...(params.collected
         ? { collectedAt: saved?.collectedAt ?? (this.options.now?.() ?? new Date()).toISOString() }
         : {}),
     });
     assertScope();
-    return { item: { ...item, collected: params.collected } };
+    return {
+      item: {
+        ...item,
+        collected: params.collected,
+        ...(params.archived !== undefined ? { archived: params.archived } : {}),
+      },
+    };
   }
 }

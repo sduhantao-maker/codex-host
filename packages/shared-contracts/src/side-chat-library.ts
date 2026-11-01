@@ -9,7 +9,11 @@ export const sideChatListParamsSchema = z
   .strict();
 
 export const sideChatUpdateParamsSchema = z
-  .object({ threadId: hostThreadIdSchema, collected: z.boolean() })
+  .object({
+    threadId: hostThreadIdSchema,
+    collected: z.boolean(),
+    archived: z.boolean().optional(),
+  })
   .strict();
 
 export const sideChatLibraryItemSchema = z
@@ -20,6 +24,7 @@ export const sideChatLibraryItemSchema = z
     title: z.string(),
     collected: z.boolean(),
     sourceAvailable: z.boolean().optional(),
+    archived: z.boolean().optional(),
   })
   .strict();
 

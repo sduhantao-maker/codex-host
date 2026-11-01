@@ -1,9 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
+import { hostThreadIdSchema } from "@codexhost/shared-contracts";
 import { createSideChatLibrary } from "../src/renderer-sidechat-library.js";
 
 const side = {
-  threadId: "side-1",
-  sourceThreadId: "parent-1",
+  threadId: hostThreadIdSchema.parse("side-1"),
+  sourceThreadId: hostThreadIdSchema.parse("parent-1"),
   projectId: "project-1",
   title: "子聊",
   collected: false,
@@ -33,6 +34,70 @@ describe("side chat library ownership", () => {
       threadId: "side-1",
       collected: true,
     });
+  });
+
+  it.each([true, false])(
+    "preserves collection and origin before native archive=%s, then synchronizes only child metadata",
+    async (archived) => {
+      const request = vi.fn(async (method: string) =>
+        method === "codexhost/sideChat/update"
+          ? { item: { ...side, archived, collected: false } }
+          : {},
+      );
+      expect(await createSideChatLibrary(request).setArchived(side, archived)).toEqual({
+        collectionUpdated: true,
+      });
+      expect(request.mock.calls).toEqual([
+        ["codexhost/sideChat/update", { threadId: "side-1", collected: false }],
+        [archived ? "thread/archive" : "thread/unarchive", { threadId: "side-1" }],
+        ["codexhost/sideChat/update", { threadId: "side-1", collected: false, archived }],
+      ]);
+    },
+  );
+
+  it("preserves collection state when the native archive is rejected", async () => {
+    const entry = { ...side, collected: true };
+    const request = vi.fn(async (method: string) =>
+      method === "codexhost/sideChat/update"
+        ? { item: entry }
+        : { error: { message: "archive rejected" } },
+    );
+    await expect(createSideChatLibrary(request).setArchived(entry, true)).rejects.toThrow(
+      "archive rejected",
+    );
+    expect(request.mock.calls).toEqual([
+      ["codexhost/sideChat/update", { threadId: "side-1", collected: true }],
+      ["thread/archive", { threadId: "side-1" }],
+    ]);
+  });
+
+  it("reports native success separately when collection synchronization fails", async () => {
+    let updates = 0;
+    const request = vi.fn(async (method: string) => {
+      if (method === "codexhost/sideChat/update") {
+        if (++updates === 2) throw new Error("metadata unavailable");
+        return { item: side };
+      }
+      return {};
+    });
+    expect(await createSideChatLibrary(request).setArchived(side, true)).toEqual({
+      collectionUpdated: false,
+    });
+    expect(request).toHaveBeenCalledTimes(3);
+  });
+
+  it("keeps native archive available when origin registration fails", async () => {
+    const request = vi.fn(async (method: string) => {
+      if (method === "codexhost/sideChat/update") throw new Error("index unavailable");
+      return {};
+    });
+    expect(await createSideChatLibrary(request).setArchived(side, true)).toEqual({
+      collectionUpdated: false,
+    });
+    expect(request.mock.calls).toEqual([
+      ["codexhost/sideChat/update", { threadId: "side-1", collected: false }],
+      ["thread/archive", { threadId: "side-1" }],
+    ]);
   });
 
   it.each([

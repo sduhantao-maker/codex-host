@@ -36,6 +36,31 @@ function entry(id: string): StoredSideChatCollectionEntry {
 }
 
 describe("side chat collection storage", () => {
+  it("persists archive hints without losing provenance and rejects malformed archive data", async () => {
+    const { store, directory } = await open();
+    const origin: StoredSideChatCollectionEntry = {
+      ...entry("archived-side"),
+      registeredAt: "2026-10-31T00:00:00.000Z",
+    };
+    delete origin.collectedAt;
+    await store.setSideChatCollected(origin.threadId, { ...origin, archived: true });
+    await store.close();
+    const restarted = (await open(directory)).store;
+    expect(await restarted.listSideChatCollection()).toEqual([{ ...origin, archived: true }]);
+    await restarted.setSideChatCollected(origin.threadId, { ...origin, archived: false });
+    const file = path.join(directory, "side-chat-collection.json");
+    const before = await readFile(file, "utf8");
+    expect(JSON.parse(before).entries).toEqual([{ ...origin, archived: false }]);
+    await expect(
+      restarted.setSideChatCollected(origin.threadId, {
+        ...origin,
+        archived: "true",
+      } as unknown as StoredSideChatCollectionEntry),
+    ).rejects.toThrow();
+    expect(await readFile(file, "utf8")).toBe(before);
+    expect(await restarted.listThreads()).toEqual([]);
+  });
+
   it("retains registered origins when uncollecting and rejects reparenting", async () => {
     const { store, directory } = await open();
     const original = { ...entry("legacy-side"), registeredAt: "2026-10-31T00:00:00.000Z" };
