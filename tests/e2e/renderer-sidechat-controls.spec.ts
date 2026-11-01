@@ -8,6 +8,7 @@ const { outputFiles } = await build({
   stdin: {
     contents: `
       import { installRendererSideChatControls } from './packages/renderer-extension/src/renderer-sidechat-controls.ts';
+      import { installRendererSideChatFeatures } from './packages/renderer-extension/src/renderer-sidechat-features.ts';
       window.setup = () => {
         let collected = false;
         const calls = [];
@@ -15,8 +16,10 @@ const { outputFiles } = await build({
         document.querySelector('main').__reactFiber$test = { memoizedState: { memoizedState: { current: scope }, next: null } };
         const row = () => ({ threadId: 'side-1', sourceThreadId: 'parent-1', projectId: window.orphan ? null : 'project-1', title: '<img src=x onerror=alert(1)>', collected, ...(window.orphan ? {sourceAvailable: false} : {}) });
         let release;
+        let featureEnabled = false;
         const route = { hostId: 'local', manager: { async sendRequest(method, params) {
           calls.push({method, params});
+          if (method === 'codexhost/sideChat/features/get') return { settings: {persistentSideChats:false,sideChatLibrary:featureEnabled,claudeActiveSideChatFork:false}, capabilities: {persistentSideChats:true,sideChatLibrary:true,claudeActiveSideChatFork:true} };
           if (window.hold && method === 'codexhost/sideChat/list') await new Promise(r => release = r);
           if (method === 'codexhost/sideChat/list') return { items: params.sourceThreadId || collected ? [row()] : [] };
           if (method === 'codexhost/sideChat/update') { if (window.failUpdate) throw new Error('保存失败'); collected = params.collected; return { item: row() }; }
@@ -30,6 +33,29 @@ const { outputFiles } = await build({
         window.retire = () => active = null;
         window.markOrphan = () => { window.orphan = true; collected = true; };
         window.controls = installRendererSideChatControls(document, () => ({ forHost: () => active }));
+        window.useFeatures = () => {
+          window.controls.dispose();
+          window.controls = installRendererSideChatFeatures(document, () => ({ forHost: () => active }));
+        };
+        window.changeFeatures = value => {
+          featureEnabled = value;
+          window.dispatchEvent(new MessageEvent('message', {source:window,data:{type:'mcp-notification',hostId:'local',method:'codexhost/sideChat/features/changed',params:{settings:{persistentSideChats:false,sideChatLibrary:value,claudeActiveSideChatFork:false},capabilities:{persistentSideChats:true,sideChatLibrary:true,claudeActiveSideChatFork:true}}}}));
+        };
+        window.monitorObservers = () => {
+          const Native = window.MutationObserver;
+          window.observerStats = {active:0,created:0,queries:0};
+          window.MutationObserver = class extends Native {
+            active = false;
+            constructor(callback) { super(callback); window.observerStats.created++; }
+            observe(...args) { if(!this.active)window.observerStats.active++;this.active=true;super.observe(...args); }
+            disconnect() { if(this.active)window.observerStats.active--;this.active=false;super.disconnect(); }
+          };
+          const query = document.querySelector.bind(document);
+          document.querySelector = selector => {
+            if(selector==='[data-app-action-sidebar-scroll]')window.observerStats.queries++;
+            return query(selector);
+          };
+        };
       };
     `,
     resolveDir: path.resolve(import.meta.dirname, "../.."),
@@ -40,6 +66,81 @@ const { outputFiles } = await build({
   platform: "browser",
   target: "es2022",
   write: false,
+});
+
+test("default-off controls hot enable and disable without observing the original page", async ({
+  page,
+}) => {
+  await page.evaluate(() => {
+    const f = window as unknown as { useFeatures(): void; monitorObservers(): void };
+    f.monitorObservers();
+    f.useFeatures();
+  });
+  await expect(page.locator("[data-codexhost-sidechats-trigger]")).toHaveCount(0);
+  expect(
+    await page.evaluate(
+      () => (window as unknown as { observerStats: { created: number } }).observerStats.created,
+    ),
+  ).toBe(0);
+  await page.evaluate(() =>
+    (window as unknown as { changeFeatures(value: boolean): void }).changeFeatures(true),
+  );
+  await expect(page.getByRole("button", { name: "侧聊收纳", exact: true })).toBeVisible();
+  await page.evaluate(() =>
+    (window as unknown as { changeFeatures(value: boolean): void }).changeFeatures(false),
+  );
+  await expect(page.locator("[data-codexhost-sidechats-trigger]")).toHaveCount(0);
+  expect(
+    await page.evaluate(
+      () => (window as unknown as { observerStats: { active: number } }).observerStats.active,
+    ),
+  ).toBe(0);
+});
+
+test("sidebar discovery coalesces changes and stops observing after mounting", async ({ page }) => {
+  await page.evaluate(() => {
+    const f = window as unknown as {
+      useFeatures(): void;
+      monitorObservers(): void;
+      changeFeatures(value: boolean): void;
+    };
+    f.useFeatures();
+    document.querySelector("aside")?.remove();
+    f.monitorObservers();
+    f.changeFeatures(true);
+    for (let i = 0; i < 200; i++) document.body.append(document.createElement("span"));
+  });
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+      ),
+  );
+  expect(
+    await page.evaluate(
+      () => (window as unknown as { observerStats: { queries: number } }).observerStats.queries,
+    ),
+  ).toBeLessThan(5);
+  await page.evaluate(() => {
+    const sidebar = document.createElement("aside");
+    sidebar.dataset.appActionSidebarScroll = "";
+    document.body.prepend(sidebar);
+  });
+  await expect(page.getByRole("button", { name: "侧聊收纳", exact: true })).toBeVisible();
+  const before = await page.evaluate(
+    () =>
+      (window as unknown as { observerStats: { queries: number; active: number } }).observerStats,
+  );
+  expect(before.active).toBe(0);
+  await page.evaluate(() => {
+    for (let i = 0; i < 200; i++) document.body.append(document.createElement("span"));
+  });
+  await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+  expect(
+    await page.evaluate(
+      () => (window as unknown as { observerStats: { queries: number } }).observerStats.queries,
+    ),
+  ).toBe(before.queries);
 });
 const bundle = outputFiles[0]?.text ?? "";
 

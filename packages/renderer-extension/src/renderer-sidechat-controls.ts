@@ -29,7 +29,7 @@ export function installRendererSideChatControls(
   routing: () => RendererHostRouting | undefined,
 ) {
   const ownerWindow = document.defaultView;
-  if (!ownerWindow) return { dispose() {} };
+  if (!ownerWindow || !document.head || !document.body) return { dispose() {} };
   const native = createNativeSideChatActions(ownerWindow);
   const trigger = document.createElement("button");
   trigger.type = "button";
@@ -246,21 +246,50 @@ export function installRendererSideChatControls(
     if (dialog.open) void refresh();
   };
   ownerWindow.addEventListener("codexhost:draft-prewarm-policy-changed", onConnectionChange);
+  let observer: MutationObserver | null = null;
+  let frame: number | null = null;
+  let observerTimeout: number | null = null;
   const mount = () => {
     if (disposed) return;
     const sidebar = document.querySelector("[data-app-action-sidebar-scroll]");
-    if (sidebar && trigger.parentElement !== sidebar) sidebar.prepend(trigger);
+    if (sidebar) {
+      if (trigger.parentElement !== sidebar) sidebar.prepend(trigger);
+      observer?.disconnect();
+      observer = null;
+      if (observerTimeout !== null) ownerWindow.clearTimeout(observerTimeout);
+      return true;
+    }
+    return false;
   };
-  const observer = new MutationObserver(mount);
-  observer.observe(document.body, { childList: true, subtree: true });
-  mount();
+  if (!mount()) {
+    observer = new MutationObserver(() => {
+      if (frame !== null) return;
+      frame = ownerWindow.requestAnimationFrame(() => {
+        frame = null;
+        mount();
+      });
+    });
+    observer.observe(document.getElementById("root") ?? document.body, {
+      childList: true,
+      subtree: true,
+    });
+    // A layout without this anchor must not leave a transcript-wide observer running.
+    observerTimeout = ownerWindow.setTimeout(() => {
+      observer?.disconnect();
+      observer = null;
+      if (frame !== null) ownerWindow.cancelAnimationFrame(frame);
+      frame = null;
+    }, 10_000);
+  }
   return {
     dispose() {
       if (disposed) return;
       disposed = true;
       generation += 1;
       operation?.abort();
-      observer.disconnect();
+      observer?.disconnect();
+      if (frame !== null) ownerWindow.cancelAnimationFrame(frame);
+      if (observerTimeout !== null) ownerWindow.clearTimeout(observerTimeout);
       dialog.removeEventListener("close", onClose);
       ownerWindow.removeEventListener("codexhost:draft-prewarm-policy-changed", onConnectionChange);
       trigger.remove();
