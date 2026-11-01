@@ -1,4 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { setImmediate as yieldToSdkInputWrite } from "node:timers/promises";
 
 import {
   query,
@@ -71,16 +72,36 @@ const DEFAULT_STEER_QUEUED_TIMEOUT_MS = 5_000;
 const WORKFLOW_AGENT_LABEL_LIMIT = 1_000;
 const INTERRUPT_TIMEOUT_MESSAGE = "Claude SDK interrupt timed out";
 
+interface InputDelivery {
+  readonly taken: boolean;
+  withdraw(): boolean;
+}
+
 class PushableInput<T> implements AsyncIterable<T> {
   #closed = false;
-  #queue: T[] = [];
+  #queue: Array<{ value: T; taken: boolean }> = [];
   #waiters: Array<(result: IteratorResult<T>) => void> = [];
 
-  push(value: T): void {
+  push(value: T): InputDelivery {
     if (this.#closed) throw new Error("Claude SDK input is closed");
+    const entry = { value, taken: false };
     const waiter = this.#waiters.shift();
-    if (waiter) waiter({ done: false, value });
-    else this.#queue.push(value);
+    if (waiter) {
+      entry.taken = true;
+      waiter({ done: false, value });
+    } else this.#queue.push(entry);
+    return {
+      get taken() {
+        return entry.taken;
+      },
+      withdraw: () => {
+        if (entry.taken) return false;
+        const index = this.#queue.indexOf(entry);
+        if (index < 0) return false;
+        this.#queue.splice(index, 1);
+        return true;
+      },
+    };
   }
 
   end(): void {
@@ -92,8 +113,11 @@ class PushableInput<T> implements AsyncIterable<T> {
   [Symbol.asyncIterator](): AsyncIterator<T> {
     return {
       next: () => {
-        const value = this.#queue.shift();
-        if (value !== undefined) return Promise.resolve({ done: false, value });
+        const entry = this.#queue.shift();
+        if (entry) {
+          entry.taken = true;
+          return Promise.resolve({ done: false, value: entry.value });
+        }
         if (this.#closed) return Promise.resolve({ done: true, value: undefined });
         return new Promise((resolve) => this.#waiters.push(resolve));
       },
@@ -486,6 +510,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
   #nativeSteer = false;
   #cancelQueuedSteer = false;
   readonly #generationSteers = new Set<string>();
+  readonly #generationInputs = new Map<string, InputDelivery>();
   /** Root tool calls of the requested Turn that have started and not yet returned a result. */
   readonly #rootToolCalls = new Set<string>();
   readonly #pendingSteers = new Map<
@@ -900,7 +925,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     const generation = this.isGenerationSteer();
     if (generation) this.#generationSteers.add(messageId);
     try {
-      this.#input.push({
+      const delivery = this.#input.push({
         type: "user",
         message: { role: "user", content: text },
         parent_tool_use_id: null,
@@ -909,6 +934,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
         origin: { kind: "human" },
         priority: "next",
       });
+      if (generation) this.#generationInputs.set(messageId, delivery);
     } catch {
       this.#pendingSteers.delete(messageId);
       this.#generationSteers.delete(messageId);
@@ -941,6 +967,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     reason?: "cancelled" | "discarded" | "refused",
   ): void {
     const generation = this.#generationSteers.delete(messageId);
+    this.#generationInputs.delete(messageId);
     const onTakeover = this.#steerTakeovers.get(messageId);
     if (!onTakeover) return;
     this.#steerTakeovers.delete(messageId);
@@ -1051,6 +1078,16 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
 
   async #interruptQuery(activeQuery: Query): Promise<void> {
     const pending = [...this.#generationSteers];
+    let handedOff = false;
+    for (const id of pending) {
+      const delivery = this.#generationInputs.get(id);
+      if (delivery?.withdraw()) {
+        this.#acceptSteer(id);
+        this.#takeOverSteer(id, false, "cancelled");
+      } else if (delivery?.taken) handedOff = true;
+    }
+    // Locked SDK writes a taken value before its next await; a blocked prior write cannot take it.
+    if (handedOff) await yieldToSdkInputWrite();
     // The locked SDK implements cancelQueued on this public method; its .d.ts omits the option.
     const interrupt: (options?: { cancelQueued?: true }) => ReturnType<Query["interrupt"]> =
       activeQuery.interrupt.bind(activeQuery);
@@ -1335,6 +1372,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
       this.#takeOverSteer(messageId, false);
     }
     this.#generationSteers.clear();
+    this.#generationInputs.clear();
     const pending = [...this.#pendingSteers.values()];
     this.#pendingSteers.clear();
     // Written input may still be delivered. Only pre-write failures are ClaudeSteerMissedTurnError.
@@ -1368,6 +1406,16 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     if (
       ["started", "completed", "cancelled", "discarded", "refused"].includes(String(message.state))
     ) {
+      // A stopped generation takeover can interrupt before this frame reaches the idle decoder.
+      if (
+        message.state === "started" &&
+        this.#generationSteers.has(message.command_uuid) &&
+        this.#idleLive &&
+        !this.#idleAccumulator
+      )
+        this.#idleAccumulator = new ClaudeNativeTurnAccumulator(
+          this.#provider ? { provider: this.#provider } : {},
+        );
       if (this.#generationSteers.has(message.command_uuid)) this.#acceptSteer(message.command_uuid);
       const reason =
         message.state === "cancelled" ||

@@ -1058,29 +1058,36 @@ class ClaudeHarnessSession implements HarnessSession {
         },
       };
     }
-    // The write happens synchronously inside steer(); claim the keep-open before it, so neither
-    // the Root result nor continuation quiescence finishes the Turn before Claude drains the steer.
+    // Reserve cancellable input ownership before handing it to the SDK's asynchronous iterator.
     const messageId = this.#randomUUID();
-    const deferred = command.steerId !== undefined && transport.isGenerationSteer?.() === true;
+    const generation = transport.isGenerationSteer?.() === true;
+    const deferred = command.steerId !== undefined && generation;
     active.steersAwaitingNative.add(messageId);
     try {
       await transport.steer(text, messageId, (started, reason) => {
         if (deferred && command.steerId && this.#active === active) {
-          if (started)
+          if (started && !active.cancellationRequested)
             this.#event({
               type: "turn.steer.started",
               turnId: command.turnId,
               steerId: command.steerId,
             });
-          else if (reason)
+          else if (reason || (started && active.cancellationRequested))
             this.#event({
               type: "turn.steer.cancelled",
               turnId: command.turnId,
               steerId: command.steerId,
-              reason,
+              reason: reason ?? "cancelled",
             });
         }
+        const repeatInterrupt =
+          generation &&
+          started &&
+          active.cancellationRequested &&
+          active.cancellation?.interrupting === true;
         this.#takeOverSteer(active, messageId, started);
+        if (repeatInterrupt)
+          void transport.abortContinuation().catch(() => this.#hardCancel(active));
       });
     } catch (error) {
       if (error instanceof ClaudeSteerMissedTurnError) {

@@ -8191,6 +8191,42 @@ describe("stable-v3 captured SDK generation steering replay", () => {
     }
   });
 
+  it("reports a native guide starting after Stop as cancelled and immediately interrupts it again", async () => {
+    const f = await replay();
+    try {
+      const guideId = await f.acceptGuide();
+      // Last-resort guard: a provider reports no survivors, then unexpectedly starts the guide.
+      f.query.interrupt.mockImplementationOnce(async () => {
+        f.result("aborted_streaming");
+        return { still_queued: [], cancelled: [] };
+      });
+      await f.session.execute({
+        type: "turn.cancel",
+        turnId: hostTurnIdSchema.parse("replay-root"),
+      });
+      f.lifecycle(guideId, "started");
+      await vi.waitFor(() => expect(f.query.interrupt).toHaveBeenCalledTimes(2));
+      await vi.waitFor(() => expect(f.terminals()).toHaveLength(1));
+      expect(
+        f
+          .events()
+          .some(
+            (event) =>
+              event.type === "turn.steer.started" || event.type === "turn.autonomous.started",
+          ),
+      ).toBe(false);
+      expect(f.events()).toContainEqual({
+        type: "turn.steer.cancelled",
+        turnId: "replay-root",
+        steerId: "guide-canonical-token",
+        reason: "cancelled",
+      });
+      expect(f.terminals()[0]).toMatchObject({ outcome: { status: "cancelled" } });
+    } finally {
+      await f.close();
+    }
+  });
+
   it("keeps the acceptance-time contract for legacy callers without a lifecycle token", async () => {
     const f = await replay();
     try {

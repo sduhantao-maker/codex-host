@@ -3625,6 +3625,36 @@ describe("generation steering cancellation capability", () => {
     await value.transport.close();
   });
 
+  it("withdraws a new generation guide the SDK has not taken without reporting NotTaken", async () => {
+    const value = fixture();
+    const { turn } = await generation(value, true);
+    const takeover = vi.fn();
+    const accepted = value.transport.steer(
+      "Withdraw before SDK next",
+      "withdraw-local-guide",
+      takeover,
+    );
+    value.fakeQuery.interrupt.mockImplementation(async () => {
+      value.fakeQuery.push({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        terminal_reason: "aborted_streaming",
+      } as unknown as SDKMessage);
+      return { still_queued: [], cancelled: [] };
+    });
+    await value.transport.abort();
+    await expect(accepted).resolves.toBeUndefined();
+    expect(takeover).toHaveBeenCalledWith(false, "cancelled");
+    await turn;
+    await value.transport.close();
+    const prompt = value.queryInput().prompt;
+    if (typeof prompt === "string" || !prompt) throw new Error("Missing streaming SDK input");
+    const input = prompt[Symbol.asyncIterator]();
+    expect(await input.next()).toMatchObject({ value: { uuid: "root-command" } });
+    expect(await input.next()).toMatchObject({ done: true });
+  });
+
   it("preserves the zero-argument SDK interrupt when no new generation input is queued", async () => {
     const value = fixture();
     const { turn } = await generation(value, true);
