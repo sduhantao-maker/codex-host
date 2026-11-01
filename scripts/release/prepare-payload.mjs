@@ -4,6 +4,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { writeDistributionMetadata } from "./distribution-metadata.mjs";
+import { readPersonalBuildIdentity } from "./personal-build.mjs";
 import {
   buildPreinstalledHarnessPlugins,
   preinstalledHarnessPluginPaths,
@@ -460,6 +461,10 @@ export async function prepareReleasePayload({ target, root = repositoryRoot }) {
     distribution: "installer",
     target: target.id,
   });
+  await writeFile(
+    path.join(payloadRoot, "app", "personal-build.json"),
+    `${JSON.stringify(readPersonalBuildIdentity(root), null, 2)}\n`,
+  );
 
   const archivePath = await ensureNodeArchive({
     target,

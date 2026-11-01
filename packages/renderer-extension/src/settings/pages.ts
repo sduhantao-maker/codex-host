@@ -4,6 +4,7 @@ import {
   type RendererUsageStatisticsRequest,
 } from "../console/pages/usage-statistics.js";
 import { consoleMessages } from "../console/messages.js";
+import { PERSONAL_BUILD_VERSION } from "../personal-build.js";
 import { createRemoteConnectionsPage } from "./remote-connections-page.js";
 import type { RemoteConnectionsControl } from "../remote-connections-control.js";
 import type {
@@ -228,6 +229,12 @@ function aboutPage(
       const product = document.createElement("strong");
       product.className = "settings-about-product";
       product.textContent = "CodexHost";
+      if (PERSONAL_BUILD_VERSION) {
+        const version = document.createElement("code");
+        version.className = "settings-about-build-version";
+        version.textContent = PERSONAL_BUILD_VERSION;
+        product.append(" ", version);
+      }
       const tagline = document.createElement("strong");
       tagline.className = "settings-about-tagline";
       tagline.textContent = messages.aboutTagline;
@@ -573,7 +580,7 @@ function updatesPage(
           renderUnavailable(messages.runtimeCapabilityNotInstalled);
           return;
         }
-        currentVersionValue.textContent = `v${result.currentVersion}`;
+        currentVersionValue.textContent = `v${PERSONAL_BUILD_VERSION ?? result.currentVersion}`;
         latestVersionValue.textContent = result.latestVersion ? `v${result.latestVersion}` : "-";
         latestVersionValue.className = result.updateAvailable
           ? "settings-update-metadata__value--newer"
