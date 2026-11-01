@@ -6,6 +6,7 @@ import {
   updateStartResultSchema,
   updateStatusResultSchema,
   updateStatusSchema,
+  runtimeStatusSchema,
 } from "@codexhost/shared-contracts";
 
 const status = {
@@ -17,6 +18,26 @@ const status = {
 } as const;
 
 describe("update runtime contracts", () => {
+  it("preserves restart capability and remains readable by the previous runtime status shape", () => {
+    const previous = {
+      runningVersion: "0.16.1",
+      installedVersion: "0.16.1",
+      restartRequired: true,
+      remote: true,
+      updateSupported: true,
+      update: { phase: "idle", targetVersion: null, error: null },
+    };
+    const value = { ...previous, installationDisabledReason: "Controlled upgrades" };
+    expect(runtimeStatusSchema.parse(previous)).toEqual(previous);
+    expect(runtimeStatusSchema.parse(value)).toEqual(value);
+    expect(runtimeStatusSchema.omit({ installationDisabledReason: true }).parse(value)).toEqual(
+      previous,
+    );
+    expect(
+      runtimeStatusSchema.safeParse({ ...value, installationDisabledReason: "x".repeat(501) })
+        .success,
+    ).toBe(false);
+  });
   it("accepts an optional bounded installation policy without treating it as a failed check", () => {
     const result = {
       currentVersion: "1.2.2",

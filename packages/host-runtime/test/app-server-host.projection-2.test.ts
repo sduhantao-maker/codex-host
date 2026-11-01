@@ -481,6 +481,52 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
+  it("preserves delegation mention carriers in start and follow-up Turns without injected context", async () => {
+    let delegationApi: DelegationControlApi | undefined;
+    const fixture = createFixture({
+      onDelegationApi: (api) => {
+        delegationApi = api;
+        return undefined;
+      },
+    });
+    try {
+      await fixture.ready;
+      if (!delegationApi) throw new Error("Delegation API was not registered");
+      const text = "[@Claude Code](subagent://codexhost.claude-code) review this change";
+      const starting = delegationApi.start({
+        harnessId: "pi",
+        task: text,
+        cwd: "/synthetic",
+        parentThreadId: "parent-thread",
+      });
+      await answerOfficialParentCwd(fixture);
+      const started = await starting;
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Delegated Session was not opened");
+      session.succeedTurn();
+      await fixture.collector.waitFor(
+        (message) =>
+          method(message, "turn/completed") &&
+          (message.params as JsonObject).threadId === started.threadId,
+      );
+      expect(session.persistedSnapshot().turns[0]?.input).toEqual([{ type: "text", text }]);
+
+      const execute = vi.spyOn(session, "execute");
+      const sent = await delegationApi.send({ threadId: started.threadId, message: text });
+      expect(execute).toHaveBeenCalledWith({
+        type: "turn.start",
+        turnId: expect.any(String),
+        input: [{ type: "text", text }],
+      });
+      session.succeedTurn();
+      await fixture.collector.waitFor((message) =>
+        turnEvent(message, "turn/completed", sent.turnId),
+      );
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
   it("prepends Side Chat context to a delegated follow-up Turn", async () => {
     let delegationApi: DelegationControlApi | undefined;
     const fixture = createFixture({
