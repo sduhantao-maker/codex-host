@@ -213,7 +213,7 @@ describe("Host canonical steering lifecycle", () => {
         status: "completed",
       });
       expect(f.commands.filter((command) => command.type === "turn.start")).toHaveLength(1);
-      const diagnostics = f.fixture.diagnosticOutput.read()?.toString() ?? "";
+      const diagnostics: string = f.fixture.diagnosticOutput.read()?.toString() ?? "";
       expect(diagnostics).not.toContain(typed);
       expect(diagnostics).not.toContain("[codexhost delegation]");
       const rows = diagnostics
