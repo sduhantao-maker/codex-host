@@ -5,25 +5,34 @@ import type { JsonObject } from "../src/index.js";
 describe("persistent side chat protocol", () => {
   it("retains the native attachment flag instead of silently discarding it", () => {
     expect(
-      decodeThreadForkRequest({
-        id: 1,
-        method: "thread/fork",
-        params: { threadId: "parent", attachToSource: true, excludeTurns: true },
-      }),
+      decodeThreadForkRequest(
+        {
+          id: 1,
+          method: "thread/fork",
+          params: { threadId: "parent", attachToSource: true, excludeTurns: true },
+        },
+        { persistentSideChats: true },
+      ),
     ).toMatchObject({ threadId: "parent", attachToSource: true, excludeTurns: true });
     expect(() =>
-      decodeThreadForkRequest({
-        id: 2,
-        method: "thread/fork",
-        params: { threadId: "parent", attachToSource: "yes" },
-      }),
+      decodeThreadForkRequest(
+        {
+          id: 2,
+          method: "thread/fork",
+          params: { threadId: "parent", attachToSource: "yes" },
+        },
+        { persistentSideChats: true },
+      ),
     ).toThrow("attachToSource");
     expect(() =>
-      decodeThreadForkRequest({
-        id: 3,
-        method: "thread/fork",
-        params: { threadId: "parent", attachToSource: true, ephemeral: true },
-      }),
+      decodeThreadForkRequest(
+        {
+          id: 3,
+          method: "thread/fork",
+          params: { threadId: "parent", attachToSource: true, ephemeral: true },
+        },
+        { persistentSideChats: true },
+      ),
     ).toThrow("cannot combine");
   });
 

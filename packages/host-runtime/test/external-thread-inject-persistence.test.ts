@@ -36,8 +36,14 @@ function inject(
 }
 
 describe("External Side Chat context persistence", () => {
-  it("restores acknowledged context after a Host restart without changing its parent", async () => {
-    const first = createFixture();
+  it("restores persisted context after a Host restart without changing its parent", async () => {
+    const first = createFixture({
+      sideChatFeatures: {
+        persistentSideChats: true,
+        sideChatLibrary: true,
+        claudeActiveSideChatFork: true,
+      },
+    });
     let active = first;
     try {
       const parentId = await startPiThread(first);
@@ -57,10 +63,12 @@ describe("External Side Chat context persistence", () => {
       await expect(
         inject(first, sideId, 4, "Parent history is reference only."),
       ).resolves.toMatchObject({ result: {} });
-      await expect(
-        first.mappingStore.getThread(hostThreadIdSchema.parse(sideId)),
-      ).resolves.toMatchObject({
-        pendingInjectedText: ["Parent history is reference only."],
+      await vi.waitFor(async () => {
+        await expect(
+          first.mappingStore.getThread(hostThreadIdSchema.parse(sideId)),
+        ).resolves.toMatchObject({
+          pendingInjectedText: ["Parent history is reference only."],
+        });
       });
       await expect(
         first.mappingStore.getThread(hostThreadIdSchema.parse(parentId)),
@@ -86,6 +94,11 @@ describe("External Side Chat context persistence", () => {
         return { ok: true, value: resumed };
       });
       const restarted = createFixture({
+        sideChatFeatures: {
+          persistentSideChats: true,
+          sideChatLibrary: true,
+          claudeActiveSideChatFork: true,
+        },
         externalAdapters: new Map([["pi", adapter]]),
         mappingStoreDirectory: directory,
       });
@@ -116,7 +129,7 @@ describe("External Side Chat context persistence", () => {
     }
   });
 
-  it("orders concurrent injections before a following Turn and only acknowledges durable text", async () => {
+  it("acknowledges in-memory injections and orders durable context before the same-thread Turn", async () => {
     const directory = mkdtempSync(path.join(tmpdir(), "codexhost-inject-order-"));
     const entered = Promise.withResolvers<undefined>();
     const release = Promise.withResolvers<undefined>();
@@ -129,7 +142,15 @@ describe("External Side Chat context persistence", () => {
         }
       },
     });
-    const fixture = createFixture({ mappingStore: store, mappingStoreDirectory: directory });
+    const fixture = createFixture({
+      mappingStore: store,
+      mappingStoreDirectory: directory,
+      sideChatFeatures: {
+        persistentSideChats: true,
+        sideChatLibrary: true,
+        claudeActiveSideChatFork: true,
+      },
+    });
     try {
       const threadId = await startPiThread(fixture);
       const session = fixture.adapter.sessions[0];
@@ -140,9 +161,9 @@ describe("External Side Chat context persistence", () => {
       const starting = startPiTurn(fixture, threadId, 4);
       await entered.promise;
       expect(execute).not.toHaveBeenCalled();
-      release.resolve(undefined);
       await expect(first).resolves.toMatchObject({ result: {} });
       await expect(second).resolves.toMatchObject({ result: {} });
+      release.resolve(undefined);
       const turnId = await starting;
       session.succeedTurn();
       await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
@@ -155,7 +176,7 @@ describe("External Side Chat context persistence", () => {
     }
   });
 
-  it("does not acknowledge or send context when its durable write fails", async () => {
+  it("keeps native in-memory injection usable and diagnoses a failed durable write", async () => {
     const directory = mkdtempSync(path.join(tmpdir(), "codexhost-inject-failure-"));
     const store = new MappingStore({
       directory,
@@ -164,15 +185,33 @@ describe("External Side Chat context persistence", () => {
           throw new Error("synthetic context write failure");
       },
     });
-    const fixture = createFixture({ mappingStore: store, mappingStoreDirectory: directory });
+    const fixture = createFixture({
+      mappingStore: store,
+      mappingStoreDirectory: directory,
+      sideChatFeatures: {
+        persistentSideChats: true,
+        sideChatLibrary: true,
+        claudeActiveSideChatFork: true,
+      },
+    });
+    let diagnostics = "";
+    fixture.diagnosticOutput.on("data", (chunk: Buffer) => {
+      diagnostics += chunk.toString();
+    });
     try {
       const threadId = await startPiThread(fixture);
       await expect(
-        inject(fixture, threadId, 2, "Must not be acknowledged."),
-      ).resolves.toMatchObject({ error: { code: -32081 } });
+        inject(fixture, threadId, 2, "Keep this native context."),
+      ).resolves.toMatchObject({ result: {} });
+      expect(
+        (await store.getThread(hostThreadIdSchema.parse(threadId)))?.pendingInjectedText,
+      ).toBeUndefined();
+      await vi.waitFor(() =>
+        expect(diagnostics).toContain("Mapping Store atomic replacement failed"),
+      );
       await completePiTurn(fixture, threadId, 3);
       expect(fixture.adapter.sessions[0]?.persistedSnapshot().turns[0]?.input).toEqual([
-        { type: "text", text: "synthetic" },
+        { type: "text", text: "Keep this native context.\n\nsynthetic" },
       ]);
     } finally {
       await stopFixture(fixture);
@@ -197,7 +236,15 @@ describe("External Side Chat context persistence", () => {
         }
       },
     });
-    const fixture = createFixture({ mappingStore: store, mappingStoreDirectory: directory });
+    const fixture = createFixture({
+      mappingStore: store,
+      mappingStoreDirectory: directory,
+      sideChatFeatures: {
+        persistentSideChats: true,
+        sideChatLibrary: true,
+        claudeActiveSideChatFork: true,
+      },
+    });
     try {
       const threadId = await startPiThread(fixture);
       await inject(fixture, threadId, 2, "Side context.");

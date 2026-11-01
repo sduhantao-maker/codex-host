@@ -48,7 +48,14 @@ async function startTurn(
 
 async function fixture() {
   const adapter = new FakeHarnessAdapter(harnessIdSchema.parse("claude-code"));
-  const host = createFixture({ externalAdapters: new Map([["claude-code", adapter]]) });
+  const host = createFixture({
+    externalAdapters: new Map([["claude-code", adapter]]),
+    sideChatFeatures: {
+      persistentSideChats: true,
+      sideChatLibrary: true,
+      claudeActiveSideChatFork: true,
+    },
+  });
   const sourceId = await startExternalThread(host, CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID);
   const source = adapter.sessions[0];
   const sourceRef = source?.initialState.nativeRef;

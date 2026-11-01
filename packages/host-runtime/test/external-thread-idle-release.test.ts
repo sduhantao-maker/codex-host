@@ -15,7 +15,7 @@ function deferred() {
   return { promise, resolve };
 }
 
-async function fixture() {
+async function fixture(persistentSideChats = false) {
   const adapter = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
   const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
   if (!opened.ok) throw new Error(opened.error.message);
@@ -53,6 +53,7 @@ async function fixture() {
   const runtime = new ExternalThreadRuntime({
     adapters: new Map([["pi", adapter]]),
     repository,
+    persistentSideChats: () => persistentSideChats,
     consumeOutputs: async (thread) => {
       for await (const output of thread.session.outputs) void output;
     },
@@ -174,7 +175,7 @@ describe("external Thread idle release", () => {
   });
 
   it("restores durable Side Chat context after releasing an idle Session", async () => {
-    const f = await fixture();
+    const f = await fixture(true);
     f.thread.record.pendingInjectedText = ["Durable side context."];
     f.thread.pendingInjectedText = ["Durable side context."];
     f.idle.configure({ enabled: true, timeoutMinutes: 10 });

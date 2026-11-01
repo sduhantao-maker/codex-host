@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
@@ -39,8 +39,15 @@ function session(adapter: FakeHarnessAdapter) {
   return value;
 }
 
-function setup() {
+function setup(sideChatFeatures = false) {
   const directory = mkdtempSync(path.join(tmpdir(), "shared-threads-"));
+  const features = {
+    persistentSideChats: true,
+    sideChatLibrary: true,
+    claudeActiveSideChatFork: true,
+  };
+  if (sideChatFeatures)
+    writeFileSync(path.join(directory, "sidechat-features.json"), JSON.stringify(features));
   const owner = new SharedThreadOwner();
   const adapter = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
   const open = vi.spyOn(adapter, "open");
@@ -54,6 +61,7 @@ function setup() {
     desktopOutput: owner.output,
     diagnosticOutput,
     mappingStore: store,
+    ...(sideChatFeatures ? { environment: { CODEXHOST_DATA_DIR: directory } } : {}),
     externalAdapters: new Map([["pi", adapter]]),
   });
   const running = host.run();
@@ -66,7 +74,10 @@ function setup() {
   });
   function front(delegateCreates: boolean, connect = async () => owner.connect()) {
     const bridge = new SharedThreadBridge({ connect, delegateCreates, diagnose: () => undefined });
-    const fixture = createFixture({ sharedThreads: bridge });
+    const fixture = createFixture({
+      sharedThreads: bridge,
+      ...(sideChatFeatures ? { sideChatFeatures: features } : {}),
+    });
     const official = new JsonLineCollector(fixture.official.stdin);
     const nativeRequests: JsonObject[] = [];
     fixture.official.stdin.on("data", () => {
@@ -102,7 +113,7 @@ async function rpc(
 
 describe("shared external Threads", () => {
   it("collects local and shared side chats in their owning stores without sending their IDs to Codex", async () => {
-    const { front, adapter, store } = setup();
+    const { front, adapter, store } = setup(true);
     const ssh = front(true);
     const desktop = front(false);
     const sharedParent = await startPiThread(ssh);

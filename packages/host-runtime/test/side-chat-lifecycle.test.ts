@@ -32,7 +32,13 @@ function resultThread(response: JsonObject): JsonObject {
 
 describe("persistent native side chat contract through Host", () => {
   it("attaches a durable fork while its parent continues, without sending child input to the parent", async () => {
-    const fixture = createFixture();
+    const fixture = createFixture({
+      sideChatFeatures: {
+        persistentSideChats: true,
+        sideChatLibrary: true,
+        claudeActiveSideChatFork: true,
+      },
+    });
     try {
       const parentId = await startExternalThread(fixture, "codexhost/pi-native", 1, {
         historyMode: "paginated",
@@ -113,7 +119,13 @@ describe("persistent native side chat contract through Host", () => {
   });
 
   it("recovers collected and uncollected side identities after restarting, and uncollect never deletes history", async () => {
-    let fixture = createFixture();
+    let fixture = createFixture({
+      sideChatFeatures: {
+        persistentSideChats: true,
+        sideChatLibrary: true,
+        claudeActiveSideChatFork: true,
+      },
+    });
     try {
       const parentId = await startExternalThread(fixture, "codexhost/pi-native");
       await completePiTurn(fixture, parentId, 2);
@@ -134,7 +146,14 @@ describe("persistent native side chat contract through Host", () => {
       ).toHaveProperty("error");
       const directory = fixture.mappingStoreDirectory;
       await closeFixture(fixture);
-      fixture = createFixture({ mappingStoreDirectory: directory });
+      fixture = createFixture({
+        mappingStoreDirectory: directory,
+        sideChatFeatures: {
+          persistentSideChats: true,
+          sideChatLibrary: true,
+          claudeActiveSideChatFork: true,
+        },
+      });
       await fixture.ready;
       const all = await rpc(fixture, 7, "codexhost/sideChat/list", { sourceThreadId: parentId });
       expect((all.result as JsonObject).items).toEqual(
@@ -161,12 +180,30 @@ describe("persistent native side chat contract through Host", () => {
         await fixture.mappingStore.getThread(hostThreadIdSchema.parse(first.id)),
       ).toMatchObject({ ephemeral: false, attachedToThreadId: parentId });
       expect((await rpc(fixture, 10, "codexhost/sideChat/list", {})).result).toEqual({ items: [] });
-      expect(await rpc(fixture, 11, "thread/delete", { threadId: parentId })).toMatchObject({
-        error: { code: -32076 },
+      expect(await rpc(fixture, 11, "thread/delete", { threadId: parentId })).toEqual({
+        id: 11,
+        result: {},
       });
-      expect(
-        await fixture.mappingStore.getThread(hostThreadIdSchema.parse(parentId)),
-      ).not.toBeNull();
+      expect(await fixture.mappingStore.getThread(hostThreadIdSchema.parse(parentId))).toBeNull();
+      for (const child of [first, second]) {
+        expect(
+          await fixture.mappingStore.getThread(hostThreadIdSchema.parse(child.id)),
+        ).toMatchObject({ ephemeral: false, attachedToThreadId: parentId });
+      }
+      const orphaned = await rpc(fixture, 12, "codexhost/sideChat/list", {
+        sourceThreadId: parentId,
+      });
+      expect((orphaned.result as JsonObject).items).toEqual(
+        expect.arrayContaining(
+          [first, second].map((child) =>
+            expect.objectContaining({
+              threadId: child.id,
+              sourceThreadId: parentId,
+              sourceAvailable: false,
+            }),
+          ),
+        ),
+      );
     } finally {
       await stopFixture(fixture);
     }
