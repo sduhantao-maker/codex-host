@@ -133,11 +133,15 @@ describe("Claude active native Fork boundary", () => {
       ),
     ]);
     const before = structuredClone(f.sessions.get(sourceId));
+    const read = vi.spyOn(f.dependencies, "readSessionMessages");
     const opened = await f.fork(secondAssistantId, false);
     expect(opened.ok).toBe(true);
     expect(f.dependencies.forkSession).toHaveBeenCalledOnce();
     expect(f.dependencies.deleteSession).not.toHaveBeenCalled();
     expect(f.sessions.get(sourceId)).toEqual(before);
+    expect(read.mock.calls.every(([input]) => input.includeControlRecords === undefined)).toBe(
+      true,
+    );
   });
 
   it("counts tools only along the checkpoint parent chain, not abandoned branches", () => {
@@ -273,6 +277,38 @@ describe("Claude active native Fork boundary", () => {
     expect(f.sessions.size).toBe(1);
     expect(f.sessions.has(sourceId)).toBe(true);
   });
+
+  it.each(["missing-origin", "later-input"])(
+    "rejects an active Fork with %s instead of hiding unexpected native history",
+    async (scenario) => {
+      const f = fixture([user()]);
+      const nativeFork = f.dependencies.forkSession.getMockImplementation();
+      if (!nativeFork) throw new Error("Missing native Fork");
+      f.dependencies.forkSession.mockImplementationOnce(async (input) => {
+        const forked = await nativeFork(input);
+        const messages = f.sessions.get(forked.sessionId);
+        const inherited = messages?.find((message) => message.type === "user");
+        if (!messages || !inherited || typeof inherited.uuid !== "string")
+          throw new Error("Missing inherited user message");
+        if (scenario === "missing-origin") {
+          delete inherited.forkedFrom;
+        } else {
+          messages.push({
+            ...entry("user", resultId, inherited.uuid, "Unexpected later input"),
+            sessionId: forked.sessionId,
+          });
+        }
+        return forked;
+      });
+      await expect(f.fork(userId)).resolves.toMatchObject({
+        ok: false,
+        error: { code: "protocolError" },
+      });
+      expect(f.dependencies.deleteSession).toHaveBeenCalledOnce();
+      expect(f.sessions.size).toBe(1);
+      expect(f.sessions.get(sourceId)).toEqual([user()]);
+    },
+  );
 
   it("rejects an incomplete tool prefix before asking the SDK to create anything", async () => {
     const f = fixture([user(), tool()]);

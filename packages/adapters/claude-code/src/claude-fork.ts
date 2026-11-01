@@ -44,6 +44,10 @@ function error(code: HarnessError["code"], message: string, retryable: boolean):
   return { code, message, retryable };
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 function comparableTurn(turn: HostTurnSnapshot): unknown {
   return {
     input: turn.input,
@@ -70,7 +74,7 @@ async function readSnapshot(
   dependencies: ClaudeForkInput["dependencies"],
   cwd: string,
   sessionId: string,
-  checkpointId?: string,
+  activeBoundary?: { checkpointId: string; sourceSessionId?: string },
 ): Promise<HarnessResult<HostThreadSnapshot>> {
   let messages: unknown[];
   try {
@@ -78,7 +82,7 @@ async function readSnapshot(
       (await dependencies.readSessionMessages({
         cwd,
         sessionId,
-        ...(checkpointId !== undefined ? { includeControlRecords: true } : {}),
+        ...(activeBoundary ? { includeControlRecords: true } : {}),
       })) ?? [];
   } catch {
     return {
@@ -93,7 +97,39 @@ async function readSnapshot(
     };
   }
   try {
-    if (checkpointId !== undefined) {
+    if (activeBoundary) {
+      let checkpointId = activeBoundary.checkpointId;
+      if (activeBoundary.sourceSessionId) {
+        const entries = new Map<string, Record<string, unknown>>();
+        for (const message of messages) {
+          if (isRecord(message) && typeof message.uuid === "string")
+            entries.set(message.uuid, message);
+        }
+        const main = [...entries.values()].filter(
+          (message) =>
+            message.isSidechain !== true &&
+            (message.type === "user" || message.type === "assistant"),
+        );
+        const matches = main.filter((message) => {
+          const origin = message.forkedFrom;
+          return (
+            isRecord(origin) &&
+            origin.sessionId === activeBoundary.sourceSessionId &&
+            origin.messageUuid === activeBoundary.checkpointId
+          );
+        });
+        // The SDK copies abandoned branches too; validate the selected branch without hiding later input.
+        if (
+          matches.length !== 1 ||
+          matches[0] !== main.at(-1) ||
+          typeof matches[0]?.uuid !== "string"
+        )
+          return {
+            ok: false,
+            error: error("protocolError", "Claude Code Fork boundary provenance is invalid", false),
+          };
+        checkpointId = matches[0].uuid;
+      }
       const prefix = claudeForkPrefix(messages, checkpointId);
       if (!prefix)
         return {
@@ -180,7 +216,7 @@ export async function forkClaudeSession(
     input.dependencies,
     input.cwd,
     sourceRef.data.nativeSessionId,
-    forkCheckpointId,
+    forkCheckpointId ? { checkpointId: forkCheckpointId } : undefined,
   );
   if (!source.ok) return source;
   if (input.kind === "rollbackLastTurn" && source.value.turns.length === 0) {
@@ -266,8 +302,20 @@ export async function forkClaudeSession(
       .catch(() => undefined);
   };
   const [derived, sourceAfter] = await Promise.all([
-    readSnapshot(input.dependencies, input.cwd, derivedSessionId),
-    readSnapshot(input.dependencies, input.cwd, sourceRef.data.nativeSessionId, forkCheckpointId),
+    readSnapshot(
+      input.dependencies,
+      input.cwd,
+      derivedSessionId,
+      forkCheckpointId
+        ? { checkpointId: forkCheckpointId, sourceSessionId: sourceRef.data.nativeSessionId }
+        : undefined,
+    ),
+    readSnapshot(
+      input.dependencies,
+      input.cwd,
+      sourceRef.data.nativeSessionId,
+      forkCheckpointId ? { checkpointId: forkCheckpointId } : undefined,
+    ),
   ]);
   if (!derived.ok) {
     await cleanup();
