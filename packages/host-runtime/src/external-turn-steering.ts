@@ -44,6 +44,7 @@ export interface NativeSteeringThread {
   pendingSteerProjections: Set<Promise<void>>;
   steeredTurnIds: Set<HostTurnId>;
   session: {
+    readonly steerLifecycle?: true | undefined;
     execute(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>>;
   };
 }
@@ -155,26 +156,39 @@ export async function insertNativeSteer(
       clientUserMessageId?: string,
     ): Promise<void>;
     diagnose(error: unknown): void;
+    reserveProjection?(
+      turnId: HostTurnId,
+      item: HostUserMessageItem,
+      clientUserMessageId?: string,
+    ): () => void;
   },
 ): Promise<void> {
   const restored = restoreHarnessCommandMentions(input.text);
   const steered: HostTextInput[] = [{ type: "text", text: rewriteDelegationMentionText(restored) }];
   const displayed: HostTextInput[] = [{ type: "text", text: restored }];
   const projectionDone = Promise.withResolvers<undefined>();
+  const item: HostUserMessageItem = {
+    type: "userMessage",
+    itemId: hostItemIdSchema.parse(randomUUID()),
+    input: displayed,
+  };
+  const forget =
+    thread.session.steerLifecycle && host.reserveProjection
+      ? host.reserveProjection(input.turnId, item, input.clientUserMessageId)
+      : undefined;
+  let deferred = false;
   thread.pendingSteerProjections.add(projectionDone.promise);
   try {
     const result = await thread.session.execute({
       type: "turn.steer",
       turnId: input.turnId,
       input: steered,
+      ...(forget ? { steerId: item.itemId } : {}),
     });
     if (!result.ok) throw new ExternalSteerNotTakenError(result.error.message);
     thread.steeredTurnIds.add(input.turnId);
-    const item: HostUserMessageItem = {
-      type: "userMessage",
-      itemId: hostItemIdSchema.parse(randomUUID()),
-      input: displayed,
-    };
+    deferred = !!forget && result.value.projection === "deferred";
+    if (deferred) return;
     try {
       await host.project(input.turnId, item, input.clientUserMessageId);
     } catch (error) {
@@ -182,6 +196,7 @@ export async function insertNativeSteer(
       host.diagnose(error);
     }
   } finally {
+    if (!deferred) forget?.();
     projectionDone.resolve(undefined);
     thread.pendingSteerProjections.delete(projectionDone.promise);
   }
