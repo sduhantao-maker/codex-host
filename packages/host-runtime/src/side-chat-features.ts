@@ -10,6 +10,9 @@ import {
   type SideChatFeatures,
 } from "@codexhost/shared-contracts";
 
+const featureKeys = ["persistentSideChats", "sideChatLibrary", "claudeActiveSideChatFork"] as const;
+type FeatureRevisions = Record<keyof SideChatFeatures, number>;
+
 /** Cached settings: Desktop request admission never reads configuration from disk. */
 export class SideChatFeaturesStore {
   readonly file: string;
@@ -17,6 +20,13 @@ export class SideChatFeaturesStore {
   #watcher: FSWatcher | undefined;
   #timer: ReturnType<typeof setTimeout> | undefined;
   #tail: Promise<unknown> = Promise.resolve();
+  readonly #disabledWaiters = new Set<() => void>();
+  readonly #revisions: FeatureRevisions = {
+    persistentSideChats: 0,
+    sideChatLibrary: 0,
+    claudeActiveSideChatFork: 0,
+  };
+  readonly #persistedRevisions: FeatureRevisions = { ...this.#revisions };
   constructor(
     environment: NodeJS.ProcessEnv,
     private readonly changed: () => void,
@@ -35,11 +45,34 @@ export class SideChatFeaturesStore {
   #apply(value: SideChatFeatures): void {
     if (JSON.stringify(value) === JSON.stringify(this.#value)) return;
     this.#value = value;
+    if (!value.persistentSideChats) for (const release of this.#disabledWaiters) release();
     this.changed();
   }
+  #applyUnchanged(value: SideChatFeatures, revisions: FeatureRevisions): void {
+    const next = this.value;
+    for (const key of featureKeys) {
+      if (this.#revisions[key] === revisions[key]) next[key] = value[key];
+    }
+    this.#apply(next);
+  }
+  waitForPersistence(work: Promise<void> | undefined): Promise<void> {
+    if (!work || !this.#value.persistentSideChats) return Promise.resolve();
+    return new Promise((resolve) => {
+      const release = () => {
+        this.#disabledWaiters.delete(release);
+        resolve();
+      };
+      this.#disabledWaiters.add(release);
+      void work.then(release, release);
+    });
+  }
   async reload(): Promise<void> {
+    const revisions = { ...this.#persistedRevisions };
     try {
-      this.#apply(sideChatFeaturesSchema.parse(JSON.parse(await readFile(this.file, "utf8"))));
+      this.#applyUnchanged(
+        sideChatFeaturesSchema.parse(JSON.parse(await readFile(this.file, "utf8"))),
+        revisions,
+      );
     } catch (error) {
       this.#apply({ ...DEFAULT_SIDE_CHAT_FEATURES });
       if (!(error && typeof error === "object" && "code" in error && error.code === "ENOENT"))
@@ -67,13 +100,31 @@ export class SideChatFeaturesStore {
   }
   set(input: unknown): Promise<SideChatFeatures> {
     const patch = sideChatFeaturesSetParamsSchema.parse(input);
+    const disabled = this.value;
+    for (const key of featureKeys) {
+      if (patch[key] === undefined) continue;
+      this.#revisions[key] += 1;
+      if (patch[key] === false) disabled[key] = false;
+    }
+    // Disabling is a recovery action and must work even when disk writes are stalled.
+    this.#apply(disabled);
+    const requested = { ...this.#revisions };
     const update = this.#tail.then(async () => {
-      const value = sideChatFeaturesSchema.parse({ ...this.#value, ...patch });
+      const value = this.value;
+      for (const key of featureKeys) {
+        if (patch[key] !== undefined && requested[key] === this.#revisions[key])
+          value[key] = patch[key];
+      }
+      const revisions = { ...this.#revisions };
       const temporary = this.file + ".tmp-" + randomUUID();
       await mkdir(path.dirname(this.file), { recursive: true });
       await writeFile(temporary, JSON.stringify(value) + "\n", { mode: 0o600, flag: "wx" });
       await rename(temporary, this.file);
-      this.#apply(value);
+      for (const key of featureKeys) {
+        if (patch[key] !== undefined && requested[key] === this.#revisions[key])
+          this.#persistedRevisions[key] = requested[key];
+      }
+      this.#applyUnchanged(value, revisions);
       return this.value;
     });
     this.#tail = update.catch((error: unknown) => {
