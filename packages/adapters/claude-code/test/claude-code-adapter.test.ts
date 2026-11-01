@@ -440,6 +440,7 @@ describe("Claude running Fork capture", () => {
             {
               type: "user",
               uuid: sent.userMessageId,
+              parentUuid: null,
               session_id: transport.sessionId,
               message: { role: "user", content: sent.text },
             },
@@ -453,7 +454,11 @@ describe("Claude running Fork capture", () => {
           ok: true,
           value: {
             turnId: "active-parent",
-            checkpoint: { nativeSessionId: transport.sessionId, checkpointId: sent.userMessageId },
+            checkpoint: {
+              nativeSessionId: transport.sessionId,
+              checkpointId: sent.userMessageId,
+              locator: { kind: "codexhost.claude-active-sidechat", version: 1 },
+            },
           },
         });
         expect(reads).toBe(delayed ? 3 : 1);

@@ -92,7 +92,10 @@ import { SessionImportScope } from "@codexhost/harness-adapter/session-import";
 import { ClaudeCodeExecutableError, resolveClaudeCodeExecutable } from "./command.js";
 import { ClaudePendingSessions, isPendingClaudeSession } from "./pending-session.js";
 import { forkClaudeSession } from "./claude-fork.js";
-import { selectClaudeActiveForkCheckpoint } from "./claude-fork-boundary.js";
+import {
+  CLAUDE_ACTIVE_SIDECHAT_CHECKPOINT,
+  selectClaudeActiveForkCheckpoint,
+} from "./claude-fork-boundary.js";
 import { remapForkedSessionReferences } from "./claude-fork-references.js";
 import { mapClaudeSnapshot, mapClaudeSubagentSnapshot } from "./claude-history.js";
 import { claudeTranscriptItemId } from "./item-identity.js";
@@ -766,6 +769,7 @@ class ClaudeHarnessSession implements HarnessSession {
           const messages = await this.#readSessionMessages({
             cwd: this.#cwd,
             sessionId: this.#sessionId,
+            includeControlRecords: true,
           });
           const checkpointId = selectClaudeActiveForkCheckpoint(
             messages ?? [],
@@ -781,6 +785,7 @@ class ClaudeHarnessSession implements HarnessSession {
                   nativeSessionId: this.#sessionId,
                   checkpointId,
                   formatVersion: 1,
+                  locator: CLAUDE_ACTIVE_SIDECHAT_CHECKPOINT,
                 }),
               },
             };
@@ -3237,11 +3242,12 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
         if (!info) return undefined;
         return info.cwd ? { cwd: info.cwd } : {};
       },
-      readSessionMessages: async ({ cwd, sessionId }) => {
+      readSessionMessages: async ({ cwd, sessionId, includeControlRecords }) => {
         const transcript = await readClaudeTranscript({
           cwd,
           environment: options.environment ?? process.env,
           sessionId,
+          ...(includeControlRecords ? { includeControlRecords } : {}),
         });
         return transcript;
       },

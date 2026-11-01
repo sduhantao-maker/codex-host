@@ -2,21 +2,44 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function mainMessages(values: readonly unknown[]): Record<string, unknown>[] {
-  const messages: Record<string, unknown>[] = [];
+export const CLAUDE_ACTIVE_SIDECHAT_CHECKPOINT = {
+  kind: "codexhost.claude-active-sidechat",
+  version: 1,
+} as const;
+
+function records(values: readonly unknown[]): Map<string, Record<string, unknown>> {
+  const entries = new Map<string, Record<string, unknown>>();
   for (const value of values) {
     if (!isRecord(value)) throw new Error("Invalid Claude Fork history");
-    if (value.isSidechain === true || (value.type !== "user" && value.type !== "assistant"))
-      continue;
+    if (value.isSidechain === true || typeof value.uuid !== "string") continue;
     if (
-      typeof value.uuid !== "string" ||
-      !isRecord(value.message) ||
-      value.message.role !== value.type
+      (value.type === "user" || value.type === "assistant") &&
+      (!isRecord(value.message) || value.message.role !== value.type)
     )
       throw new Error("Invalid Claude Fork message");
-    messages.push(value);
+    entries.set(value.uuid, value);
   }
-  return messages;
+  return entries;
+}
+
+/** Follow native parent links; append order also contains discarded retry branches. */
+function parentChain(
+  entries: ReadonlyMap<string, Record<string, unknown>>,
+  checkpointId: string,
+): Record<string, unknown>[] | null {
+  const chain: Record<string, unknown>[] = [];
+  const seen = new Set<string>();
+  let current = checkpointId;
+  while (!seen.has(current)) {
+    seen.add(current);
+    const entry = entries.get(current);
+    if (!entry) return null;
+    if (entry.type === "user" || entry.type === "assistant") chain.push(entry);
+    if (entry.parentUuid === null) return chain.reverse();
+    if (typeof entry.parentUuid !== "string" || !entry.parentUuid) return null;
+    current = entry.parentUuid;
+  }
+  return null;
 }
 
 function updatePendingTools(message: Record<string, unknown>, pending: Set<string>): void {
@@ -38,15 +61,16 @@ function updatePendingTools(message: Record<string, unknown>, pending: Set<strin
   }
 }
 
-/** Native Forks must retain complete tool call/result pairs, even while their source keeps running. */
+/** Only opt-in active side chats require a complete tool prefix on the selected native branch. */
 export function claudeForkPrefix(
   values: readonly unknown[],
   checkpointId: string,
 ): unknown[] | null {
-  const messages = mainMessages(values);
-  const end = messages.findIndex((message) => message.uuid === checkpointId);
-  if (end < 0) return null;
-  const prefix = messages.slice(0, end + 1);
+  const entries = records(values);
+  const checkpoint = entries.get(checkpointId);
+  if (checkpoint?.type !== "user" && checkpoint?.type !== "assistant") return null;
+  const prefix = parentChain(entries, checkpointId);
+  if (!prefix) return null;
   const pending = new Set<string>();
   for (const message of prefix) updatePendingTools(message, pending);
   return pending.size === 0 ? prefix : null;
@@ -57,7 +81,13 @@ export function selectClaudeActiveForkCheckpoint(
   values: readonly unknown[],
   userMessageId: string,
 ): string | null {
-  const messages = mainMessages(values);
+  const entries = records(values);
+  const latest = [...entries.values()].findLast(
+    (entry) => entry.type === "user" || entry.type === "assistant",
+  );
+  if (typeof latest?.uuid !== "string") return null;
+  const messages = parentChain(entries, latest.uuid);
+  if (!messages) return null;
   const userIndex = messages.findIndex(
     (message) => message.type === "user" && message.uuid === userMessageId,
   );

@@ -62,9 +62,17 @@ function fixture(messages: SessionStoreEntry[]) {
   const dependencies = {
     getSessionInfo: async ({ sessionId }: { sessionId: string }) =>
       getSessionInfo(sessionId, { dir: "/synthetic", sessionStore: store }),
-    readSessionMessages: async ({ sessionId }: { sessionId: string }) =>
+    readSessionMessages: async ({
+      sessionId,
+      includeControlRecords,
+    }: {
+      sessionId: string;
+      includeControlRecords?: boolean;
+    }) =>
       structuredClone(sessions.get(sessionId) ?? [])
-        .filter((value) => value.type === "user" || value.type === "assistant")
+        .filter(
+          (value) => includeControlRecords || value.type === "user" || value.type === "assistant",
+        )
         .map((value) => ({ ...value, session_id: sessionId })),
     forkSession: vi.fn(
       async ({
@@ -84,7 +92,7 @@ function fixture(messages: SessionStoreEntry[]) {
       sessions.delete(sessionId);
     }),
   };
-  const fork = (checkpointId: string) =>
+  const fork = (checkpointId: string, activeSideChat = true) =>
     forkClaudeSession({
       kind: "fork",
       cwd: "/synthetic",
@@ -100,12 +108,69 @@ function fixture(messages: SessionStoreEntry[]) {
         nativeSessionId: sourceId,
         checkpointId,
         formatVersion: 1,
+        ...(activeSideChat
+          ? { locator: { kind: "codexhost.claude-active-sidechat", version: 1 } }
+          : {}),
       }),
     });
   return { sessions, dependencies, fork };
 }
 
 describe("Claude active native Fork boundary", () => {
+  it("keeps ordinary v0.16.1 forks usable after an interrupted tool call", async () => {
+    const secondUserId = "55555555-5555-4555-8555-555555555555";
+    const secondAssistantId = "66666666-6666-4666-8666-666666666666";
+    const f = fixture([
+      user(),
+      tool(),
+      entry("user", secondUserId, assistantId, "A later prompt after interruption"),
+      entry(
+        "assistant",
+        secondAssistantId,
+        secondUserId,
+        [{ type: "text", text: "Later answer" }],
+        "end_turn",
+      ),
+    ]);
+    const before = structuredClone(f.sessions.get(sourceId));
+    const opened = await f.fork(secondAssistantId, false);
+    expect(opened.ok).toBe(true);
+    expect(f.dependencies.forkSession).toHaveBeenCalledOnce();
+    expect(f.dependencies.deleteSession).not.toHaveBeenCalled();
+    expect(f.sessions.get(sourceId)).toEqual(before);
+  });
+
+  it("counts tools only along the checkpoint parent chain, not abandoned branches", () => {
+    const secondUserId = "u2";
+    const answerId = "a2";
+    const messages = [
+      user(),
+      tool(),
+      entry("user", secondUserId, userId, "Retry on the surviving branch"),
+      entry("assistant", answerId, secondUserId, [{ type: "text", text: "Answer" }], "end_turn"),
+    ];
+    expect(claudeForkPrefix(messages, answerId)).toEqual([messages[0], messages[2], messages[3]]);
+    expect(selectClaudeActiveForkCheckpoint(messages, secondUserId)).toBe(answerId);
+  });
+
+  it("falls back along the current branch instead of choosing a completed abandoned sibling", () => {
+    const answer = entry(
+      "assistant",
+      "abandoned-answer",
+      userId,
+      [{ type: "text", text: "Discarded" }],
+      "end_turn",
+    );
+    expect(selectClaudeActiveForkCheckpoint([user(), answer, tool()], userId)).toBe(userId);
+  });
+
+  it("rejects a missing or cyclic parent chain for active boundaries", () => {
+    expect(claudeForkPrefix([entry("user", userId, "missing", "orphan")], userId)).toBeNull();
+    expect(
+      claudeForkPrefix([entry("user", userId, assistantId, "cycle"), tool()], assistantId),
+    ).toBeNull();
+  });
+
   it("uses the durable user entry while assistant output or a tool call is still incomplete", () => {
     expect(selectClaudeActiveForkCheckpoint([user()], userId)).toBe(userId);
     expect(
@@ -123,7 +188,32 @@ describe("Claude active native Fork boundary", () => {
     expect(
       selectClaudeActiveForkCheckpoint([user(), tool(), result()], "not-persisted"),
     ).toBeNull();
-    expect(() => claudeForkPrefix([user(), result()], resultId)).toThrow("matching call");
+    expect(claudeForkPrefix([user(), result()], resultId)).toBeNull();
+    expect(() => claudeForkPrefix([user(), { ...result(), parentUuid: userId }], resultId)).toThrow(
+      "matching call",
+    );
+  });
+
+  it("validates the surviving SDK branch through system parent nodes", async () => {
+    const secondUserId = "55555555-5555-4555-8555-555555555555";
+    const secondAssistantId = "66666666-6666-4666-8666-666666666666";
+    const systemId = "77777777-7777-4777-8777-777777777777";
+    const f = fixture([
+      user(),
+      tool(),
+      { type: "system", uuid: systemId, parentUuid: userId, sessionId: sourceId },
+      entry("user", secondUserId, systemId, "retry"),
+      entry(
+        "assistant",
+        secondAssistantId,
+        secondUserId,
+        [{ type: "text", text: "Answer" }],
+        "end_turn",
+      ),
+    ]);
+    const opened = await f.fork(secondAssistantId);
+    expect(opened).toMatchObject({ ok: true });
+    expect(f.dependencies.deleteSession).not.toHaveBeenCalled();
   });
 
   it.each(["user", "tool-result"])(

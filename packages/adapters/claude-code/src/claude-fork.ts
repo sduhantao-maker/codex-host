@@ -16,7 +16,7 @@ import {
 } from "@codexhost/shared-contracts";
 
 import { mapClaudeSnapshot } from "./claude-history.js";
-import { claudeForkPrefix } from "./claude-fork-boundary.js";
+import { CLAUDE_ACTIVE_SIDECHAT_CHECKPOINT, claudeForkPrefix } from "./claude-fork-boundary.js";
 import type { ClaudePendingSessions } from "./pending-session.js";
 import type { ClaudeAdapterDependencies } from "./transport.js";
 
@@ -74,7 +74,12 @@ async function readSnapshot(
 ): Promise<HarnessResult<HostThreadSnapshot>> {
   let messages: unknown[];
   try {
-    messages = (await dependencies.readSessionMessages({ cwd, sessionId })) ?? [];
+    messages =
+      (await dependencies.readSessionMessages({
+        cwd,
+        sessionId,
+        ...(checkpointId !== undefined ? { includeControlRecords: true } : {}),
+      })) ?? [];
   } catch {
     return {
       ok: false,
@@ -162,7 +167,15 @@ export async function forkClaudeSession(
 
   // Native worktree entry changes the Session cwd without changing the Desktop workspace.
   // The SDK resolves the source within that workspace's project/worktree history.
-  const forkCheckpointId = checkpoint?.success ? checkpoint.data.checkpointId : undefined;
+  const locator = checkpoint?.success ? checkpoint.data.locator : null;
+  const activeSideChat =
+    typeof locator === "object" &&
+    locator !== null &&
+    !Array.isArray(locator) &&
+    locator.kind === CLAUDE_ACTIVE_SIDECHAT_CHECKPOINT.kind &&
+    locator.version === CLAUDE_ACTIVE_SIDECHAT_CHECKPOINT.version;
+  const forkCheckpointId =
+    activeSideChat && checkpoint?.success ? checkpoint.data.checkpointId : undefined;
   const source = await readSnapshot(
     input.dependencies,
     input.cwd,
@@ -206,7 +219,12 @@ export async function forkClaudeSession(
   const boundaryIndex =
     input.kind === "rollbackLastTurn"
       ? source.value.turns.length - 2
-      : source.value.turns.length - 1;
+      : activeSideChat
+        ? source.value.turns.length - 1
+        : source.value.turns.findIndex(
+            (turn) =>
+              checkpoint?.success && turn.checkpoint?.checkpointId === checkpoint.data.checkpointId,
+          );
   const retained = source.value.turns[boundaryIndex];
   const boundaryId =
     forkCheckpointId ??
