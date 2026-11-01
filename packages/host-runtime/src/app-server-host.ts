@@ -1081,6 +1081,7 @@ export class AppServerHost {
       await this.#externalRuntime.idleRelease.drain();
       await this.#pluginLoading;
       const threads = this.#externalRuntime.values();
+      await Promise.allSettled(threads.map(({ injectionPersistence }) => injectionPersistence));
       await Promise.allSettled(threads.map(({ session }) => session.close()));
       await Promise.allSettled(threads.map(({ outputTask }) => outputTask));
       await this.#closeAdapters();
@@ -2071,13 +2072,15 @@ export class AppServerHost {
         this.#localSideChatCapabilities().persistentSideChats &&
         this.#sideChatFeatures.value.persistentSideChats
       ) {
-        const response = await forkOfficialSideChat(params, {
-          store: this.#repository,
-          requestOfficial: (method, nativeParams) => this.#requestOfficial(method, nativeParams),
-          assertScope: this.#sideChatScopeGuard(),
-          diagnose: (error) => this.#diagnose(error),
+        this.#dispatchDesktopReply(request, async () => {
+          const response = await forkOfficialSideChat(params, {
+            store: this.#repository,
+            requestOfficial: (method, nativeParams) => this.#requestOfficial(method, nativeParams),
+            assertScope: this.#sideChatScopeGuard(),
+            diagnose: (error) => this.#diagnose(error),
+          });
+          await this.#writer.json({ ...response, id: request.id });
         });
-        await this.#writer.json({ ...response, id: request.id });
         return;
       }
     }
@@ -2153,7 +2156,11 @@ export class AppServerHost {
         if (await this.#writeResolutionError(request, resolution)) return;
         if (resolution.kind === "external") {
           // Keep admission ordered with the next Turn until its reference context is durable.
-          await this.#injectExternalThreadItems(request, resolution.thread, params);
+          this.#dispatchDesktopReply(
+            request,
+            () => this.#injectExternalThreadItems(request, resolution.thread, params),
+            resolution.thread.id,
+          );
           return;
         }
       }
@@ -4591,14 +4598,16 @@ export class AppServerHost {
     }
     appendExternalThreadInjectedText(thread.pendingInjectedText, texts);
     if (this.#sideChatFeatures.value.persistentSideChats) {
-      try {
-        thread.record = await this.#repository.setPendingInjectedText(
-          thread.id,
-          thread.pendingInjectedText,
-        );
-      } catch (error) {
-        this.#diagnose(error);
-      }
+      thread.persistentInjectionPending = true;
+      const batch = thread.pendingInjectedText;
+      const pending = [...batch];
+      const write = (thread.injectionPersistence ?? Promise.resolve()).then(async () => {
+        thread.record = await this.#repository.setPendingInjectedText(thread.id, pending);
+        // A hot disable may have let the native memory-only Turn consume this batch.
+        if (thread.pendingInjectedText !== batch && pending.length > 0)
+          thread.record = await this.#repository.setPendingInjectedText(thread.id, []);
+      });
+      thread.injectionPersistence = write.catch((error: unknown) => this.#diagnose(error));
     }
     await this.#writer.json(rpcEnvelope(request, { result: {} }));
   }
@@ -5013,6 +5022,7 @@ export class AppServerHost {
     text: string,
     requestedTurnId: string,
   ): Promise<void> {
+    await this.#sideChatFeatures.waitForPersistence(thread.injectionPersistence);
     if (this.#externalThreadBusy(thread)) {
       throw new Error("External Thread already has an active Turn");
     }
@@ -5408,6 +5418,7 @@ export class AppServerHost {
     turn: JsonObject;
     gate: TurnProjectionGate;
   }> {
+    await this.#sideChatFeatures.waitForPersistence(thread.injectionPersistence);
     if (this.#closeRequested || this.#externalRuntime.get(thread.id) !== thread) {
       throw new ExternalSteerError(-32073, "External Thread is no longer available");
     }
@@ -5468,8 +5479,18 @@ export class AppServerHost {
   }
 
   async #consumeExternalInjectedText(thread: ExternalThread): Promise<void> {
-    thread.pendingInjectedText.length = 0;
-    if (!this.#sideChatFeatures.value.persistentSideChats) return;
+    thread.pendingInjectedText = [];
+    const persistentBatch = thread.persistentInjectionPending;
+    thread.persistentInjectionPending = false;
+    if (!this.#sideChatFeatures.value.persistentSideChats) {
+      if (persistentBatch) {
+        const clear = (thread.injectionPersistence ?? Promise.resolve()).then(async () => {
+          thread.record = await this.#repository.setPendingInjectedText(thread.id, []);
+        });
+        thread.injectionPersistence = clear.catch((error: unknown) => this.#diagnose(error));
+      }
+      return;
+    }
     // shortcut: a crash before durable clear may replay context; use native receipts for crash-idempotent delivery.
     // Native acceptance cannot be rolled back; terminal persistence retries a failed clear.
     await this.#externalRuntime

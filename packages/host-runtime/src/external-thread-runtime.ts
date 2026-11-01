@@ -84,6 +84,8 @@ export interface ExternalThread {
   ignoredInteractionIds: Set<HostInteractionId>;
   /** Durable text-only context accepted before the next native Turn. */
   pendingInjectedText: string[];
+  injectionPersistence?: Promise<void>;
+  persistentInjectionPending?: boolean;
   /** Native Session faulted or closed; idle Threads should restore instead of reuse. */
   sessionUnavailable: boolean;
   /**
@@ -440,6 +442,8 @@ export class ExternalThreadRuntime {
       pendingInjectedText: this.#persistentSideChats()
         ? [...(input.record.pendingInjectedText ?? [])]
         : [],
+      persistentInjectionPending:
+        this.#persistentSideChats() && (input.record.pendingInjectedText?.length ?? 0) > 0,
       sessionUnavailable: false,
       steeredTurnIds,
     };

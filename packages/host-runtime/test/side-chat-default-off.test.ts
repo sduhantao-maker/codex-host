@@ -68,13 +68,22 @@ describe("sidechat disabled matches stable v2", () => {
     const fixture = createFixture();
     try {
       const threadId = await startPiThread(fixture);
-      await fixture.mappingStore.setPendingInjectedText(hostThreadIdSchema.parse(threadId), ["old retained context"]);
+      await fixture.mappingStore.setPendingInjectedText(hostThreadIdSchema.parse(threadId), [
+        "old retained context",
+      ]);
       const writes = vi.spyOn(fixture.mappingStore, "setPendingInjectedText");
       await completePiTurn(fixture, threadId, 2);
-      expect(fixture.adapter.sessions[0]?.persistedSnapshot().turns[0]?.input).toEqual([{ type: "text", text: "synthetic" }]);
+      expect(fixture.adapter.sessions[0]?.persistedSnapshot().turns[0]?.input).toEqual([
+        { type: "text", text: "synthetic" },
+      ]);
       expect(writes).not.toHaveBeenCalled();
-      expect((await fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)))?.pendingInjectedText).toEqual(["old retained context"]);
-    } finally { await stopFixture(fixture); }
+      expect(
+        (await fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)))
+          ?.pendingInjectedText,
+      ).toEqual(["old retained context"]);
+    } finally {
+      await stopFixture(fixture);
+    }
   });
 
   it("advertises independent off switches and never grants remote or shared-service fork rewriting", async () => {
