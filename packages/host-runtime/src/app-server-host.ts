@@ -4651,20 +4651,6 @@ export class AppServerHost {
     request: JsonRpcRequest,
     location: Extract<ExternalThreadLocation, { kind: "external" }>,
   ): Promise<void> {
-    if (
-      (await this.#repository.list()).some(
-        (record) => record.attachedToThreadId === location.record.hostThreadId,
-      )
-    ) {
-      await this.#writer.json(
-        rpcError(
-          request,
-          -32076,
-          "Thread has attached side chats; archive it instead to retain their source",
-        ),
-      );
-      return;
-    }
     try {
       await this.#externalRuntime.deleteThread(location.record.hostThreadId);
     } catch (error) {
