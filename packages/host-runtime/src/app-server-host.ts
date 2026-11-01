@@ -4745,7 +4745,7 @@ export class AppServerHost {
     const result = await thread.session.execute({
       type: "turn.start",
       turnId,
-      input: [{ type: "text", text: rewriteDelegationMentionText(turnText) }],
+      input: [{ type: "text", text: turnText }],
     });
     if (!result.ok) {
       thread.running = false;
