@@ -51,6 +51,7 @@ const { outputFiles } = await build({
       if(scenario === "newer") remote={...remote,installedVersion:"0.12.0",runningVersion:"0.12.0",restartRequired:false};
       if(scenario === "restart") remote={...remote,installedVersion:"0.11.0",restartRequired:true};
       if(scenario === "matched") remote={...remote,installedVersion:"0.11.0",runningVersion:"0.11.0",restartRequired:false};
+      if(scenario === "controlled-restart" || scenario === "controlled-noop") remote={...remote,installedVersion:"0.10.0",runningVersion:"0.10.0",restartRequired:scenario === "controlled-restart",installationDisabledReason:"Controlled upgrade fixture"};
       const control = createRemoteConnectionsControl(window, hostId => ({
         setupSsh: async input => {
           if(input.action === "uninstall") {
@@ -70,7 +71,7 @@ const { outputFiles } = await build({
           return {state:window.setupInstalled ? "installed" : "not-installed"};
         },
         runtimeStatus: async () => {if(uninstalled && hostId !== "local") throw Object.assign(new Error("unsupported"), {code:-32601}); if(scenario === "unknown" && hostId !== "local") throw new Error("Remote unavailable"); if((scenario === "outdated" || scenario === "missing") && hostId !== "local" && !window.setupVersion) throw Object.assign(new Error("unsupported"), {code:-32601}); return hostId === "local" ? status : remote;},
-        updateRemote: async version => remote = {...remote,update:{phase:"installing",targetVersion:version,error:null}}
+        updateRemote: async version => { window.requestedUpdateVersion = version; return remote = {...remote,update:{phase:"installing",targetVersion:version,error:null}}; }
       }));
       // Mirror the settings shell: its tokens live on :host, so the page mounts in a shadow root.
       const shadow = document.querySelector("main").attachShadow({mode:"open"});
@@ -104,6 +105,38 @@ const css = (
 ).join("\n");
 const pageHtml = `<!doctype html><html lang="zh-CN" style="color-scheme:light dark"><head><style id="settings-css" media="not all">${css}</style><style>body{margin:0}</style></head><body><main></main></body></html>`;
 const shots = path.resolve(import.meta.dirname, "../../test-results/remote-connections");
+for (const scenario of ["controlled-restart", "controlled-noop"] as const) {
+  test(`Controlled remote maintenance: ${scenario}`, async ({ page }) => {
+    await page.route("http://localhost/remote-settings*", (route) =>
+      route.fulfill({ contentType: "text/html", body: pageHtml }),
+    );
+    await page.goto(`http://localhost/remote-settings?scenario=${scenario}`);
+    await page.addScriptTag({ content: outputFiles[0]?.text ?? "" });
+    await expect(
+      page.getByText("此个人构建使用受控升级，不会从此处安装其他版本。", { exact: true }),
+    ).toBeVisible();
+    await expect(page.getByRole("button", { name: "更新到本机版本", exact: true })).toHaveCount(0);
+    if (scenario === "controlled-restart") {
+      await expect(page.getByText("需要重启以使用已安装的版本", { exact: true })).toBeVisible();
+      await page.getByRole("button", { name: "重启并连接", exact: true }).click();
+      await expect
+        .poll(() =>
+          page.evaluate(
+            () => (window as { requestedUpdateVersion?: string }).requestedUpdateVersion,
+          ),
+        )
+        .toBe("0.10.0");
+    } else {
+      await expect(page.getByRole("button", { name: "重启并连接", exact: true })).toHaveCount(0);
+      expect(
+        await page.evaluate(
+          () => (window as { requestedUpdateVersion?: string }).requestedUpdateVersion,
+        ),
+      ).toBeUndefined();
+    }
+  });
+}
+
 test("SSH settings save, connection toggle, version display, and immediate update", async ({
   page,
 }) => {

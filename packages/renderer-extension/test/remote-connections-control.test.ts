@@ -4,6 +4,7 @@ import {
   createRemoteConnectionsControl,
   remoteUpdateTarget,
 } from "../src/remote-connections-control.js";
+import { remoteMaintenanceTarget } from "../src/settings/remote-connections-card.js";
 const status = (version: string, changes: Partial<RuntimeStatus> = {}): RuntimeStatus => ({
   runningVersion: version,
   installedVersion: version,
@@ -14,6 +15,19 @@ const status = (version: string, changes: Partial<RuntimeStatus> = {}): RuntimeS
   ...changes,
 });
 describe("remote version policy", () => {
+  it("keeps same-version restarts available while installation is controlled", () => {
+    const remote = {
+      ...status("0.11.0", { restartRequired: true }),
+      installationDisabledReason: "Use the personal build maintenance process",
+    };
+    expect(remoteUpdateTarget(status("0.12.0"), remote)).toBe("0.11.0");
+    expect(remoteMaintenanceTarget(status("0.12.0"), remote)).toBe("0.11.0");
+    expect(remoteUpdateTarget(status("0.12.0"), { ...remote, restartRequired: false })).toBeNull();
+    expect(
+      remoteMaintenanceTarget(status("0.12.0"), { ...remote, restartRequired: false }),
+    ).toBeNull();
+    expect(remoteUpdateTarget(status("0.12.0"), { ...remote, updateSupported: false })).toBeNull();
+  });
   it("updates older versions but never downgrades a newer remote", () => {
     expect(remoteUpdateTarget(status("0.11.0"), status("0.9.0"))).toBe("0.11.0");
     expect(remoteUpdateTarget(status("0.9.0"), status("0.11.0"))).toBeNull();

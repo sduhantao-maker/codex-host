@@ -251,14 +251,14 @@ export class RuntimeMaintenance {
       installedVersion: installed?.version ?? null,
       restartRequired,
       remote: this.options.remote,
-      updateSupported:
-        !UPDATE_INSTALLATION_DISABLED_REASON && !!resources && installed?.distribution === "npm",
+      updateSupported: !!resources && installed?.distribution === "npm",
+      ...(UPDATE_INSTALLATION_DISABLED_REASON
+        ? { installationDisabledReason: UPDATE_INSTALLATION_DISABLED_REASON }
+        : {}),
       update: { ...this.#update },
     };
   }
   start(version: string): Promise<RuntimeStatus> {
-    if (UPDATE_INSTALLATION_DISABLED_REASON)
-      return Promise.reject(new Error(UPDATE_INSTALLATION_DISABLED_REASON));
     if (this.#starting) {
       if (this.#startingVersion !== version)
         return Promise.reject(new Error("Another remote update is already pending"));
@@ -273,6 +273,8 @@ export class RuntimeMaintenance {
   }
   async #schedule(version: string): Promise<RuntimeStatus> {
     const status = await this.status();
+    if (UPDATE_INSTALLATION_DISABLED_REASON && version !== status.installedVersion)
+      throw new Error(UPDATE_INSTALLATION_DISABLED_REASON);
     if (!status.updateSupported || !status.installedVersion)
       throw new Error("Remote update requires an npm installation with the current updater");
     if (compareSemanticVersions(version, status.installedVersion) < 0)
@@ -306,6 +308,8 @@ export class RuntimeMaintenance {
       throw new Error("The remote installation changed; refresh versions before retrying");
     }
     const restartOnly = version === installed.version;
+    if (UPDATE_INSTALLATION_DISABLED_REASON && !restartOnly)
+      throw new Error(UPDATE_INSTALLATION_DISABLED_REASON);
     const resources = await this.#resources();
     if (!resources) throw new Error("Remote updater is unavailable");
     const directory = path.dirname(this.#statusPath);

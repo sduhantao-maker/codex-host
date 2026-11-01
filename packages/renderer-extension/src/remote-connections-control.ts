@@ -42,6 +42,8 @@ export function remoteUpdateTarget(
   )
     return null;
   if (["installing", "restarting", "failed"].includes(remote.update.phase)) return null;
+  if (remote.installationDisabledReason)
+    return remote.restartRequired ? remote.installedVersion : null;
   // Unpublished prereleases need an explicit action; don't infer ordering from a label.
   const stable = /^(\d+)\.(\d+)\.(\d+)$/u;
   if (!stable.test(local.runningVersion) || !stable.test(remote.installedVersion)) return null;
