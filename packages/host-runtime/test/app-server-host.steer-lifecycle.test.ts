@@ -308,6 +308,38 @@ describe("Host canonical steering lifecycle", () => {
     }
   });
 
+  it("does not restart a cancelled reserved guide when its acceptance reply arrives after Stop", async () => {
+    const f = await scenario({ holdAck: true });
+    try {
+      const submitted = f.submit();
+      await vi.waitFor(() => expect(f.steers).toHaveLength(1));
+      f.session.completeCancellationOnRequest();
+      writeRequest(f.fixture.desktopInput, {
+        id: 31,
+        method: "turn/interrupt",
+        params: { threadId: f.threadId, turnId: f.turnId },
+      });
+      await vi.waitFor(() =>
+        expect(f.commands.some((command) => command.type === "turn.cancel")).toBe(true),
+      );
+      f.acknowledge();
+      expect(await submitted).toMatchObject({
+        result: { turnId: f.turnId, delivery: "activeTurn" },
+      });
+      await f.fixture.collector.waitFor((message) => requestId(message, 31));
+      const terminal = await f.fixture.collector.waitFor((message) =>
+        turnEvent(message, "turn/completed", f.turnId),
+      );
+      expect((terminal.params as JsonObject).turn).toMatchObject({ status: "interrupted" });
+      f.started();
+      await f.flush();
+      expect(canonical(f.fixture.collector.messages)).toEqual([]);
+      expect(f.commands.filter((command) => command.type === "turn.start")).toHaveLength(1);
+    } finally {
+      await f.close();
+    }
+  });
+
   it.each([false, true])(
     "preserves immediate legacy acceptance with lifecycle advertised=%s",
     async (lifecycle) => {
