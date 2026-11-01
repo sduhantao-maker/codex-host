@@ -601,8 +601,9 @@ export interface HarnessSession {
   readonly capabilities: HarnessSessionCapabilities;
   /**
    * Only commands carrying steerId opt in; older Hosts keep acceptance-time projection.
-   * Implementations reserve/write opted-in input synchronously before awaiting its receipt,
-   * allowing an explicit cancellation to preempt that receipt wait safely.
+   * Implementations synchronously reserve cancellable input ownership before awaiting its receipt.
+   * The Adapter owns withdrawal and actual native input/interrupt write ordering, allowing an
+   * explicit cancellation to preempt the receipt wait safely.
    */
   readonly steerLifecycle?: true | undefined;
   readonly initialState: HarnessSessionState;

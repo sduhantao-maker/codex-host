@@ -503,6 +503,18 @@ export async function startHarnessBrokerServer(input: {
       return record;
     };
 
+    interface QueuedRequest {
+      request: HarnessBrokerRequest;
+      finish(): void;
+    }
+    const waitingRequests: QueuedRequest[] = [];
+    let activeRequest: QueuedRequest | undefined;
+    let priorityCancellation: QueuedRequest | undefined;
+    let receiptWindow = false;
+    let pendingSteer:
+      | { record: ServerSession; session: HarnessSession; generation: number; turnId: string }
+      | undefined;
+
     const handleRequest = async (request: HarnessBrokerRequest): Promise<unknown> => {
       if (closed || state.closed) throw new Error("Harness broker connection is closed");
       if (request.method === "adapter.open") retireWhenIdle = false;
@@ -820,8 +832,27 @@ export async function startHarnessBrokerServer(input: {
         }
         let result;
         if (command.type === "turn.start") result = await record.session.execute(command);
-        else if (command.type === "turn.steer") result = await record.session.execute(command);
-        else if (command.type === "turn.cancel") result = await record.session.execute(command);
+        else if (command.type === "turn.steer") {
+          const execution = record.session.execute(command);
+          if (record.session.steerLifecycle === true && command.steerId !== undefined) {
+            // Opt-in Sessions synchronously reserve cancellable input ownership.
+            // The Adapter owns withdrawal and native input/interrupt write ordering.
+            const scope = {
+              record,
+              session: record.session,
+              generation: record.generation,
+              turnId: command.turnId,
+            };
+            pendingSteer = scope;
+            receiptWindow = true;
+            promoteCancellation();
+            try {
+              result = await execution;
+            } finally {
+              if (pendingSteer === scope) pendingSteer = undefined;
+            }
+          } else result = await execution;
+        } else if (command.type === "turn.cancel") result = await record.session.execute(command);
         else if (command.type === "interaction.respond") {
           result = await record.session.execute({
             type: command.type,
@@ -989,6 +1020,85 @@ export async function startHarnessBrokerServer(input: {
       return null;
     };
 
+    const reply = async (request: HarnessBrokerRequest): Promise<void> => {
+      try {
+        await respond(request, { ok: true, value: await handleRequest(request) });
+      } catch (error) {
+        await respond(request, {
+          ok: false,
+          error: protocolError(error instanceof Error ? error.message : String(error)),
+        });
+      }
+    };
+    function matchesPendingStop(request: HarnessBrokerRequest): boolean {
+      const scope = pendingSteer;
+      if (!scope || request.method !== "session.execute") return false;
+      try {
+        const params = sessionExecuteParamsSchema.parse(request.params);
+        const command = brokerHostCommandSchema.parse(params.command);
+        const record = requireSession(params);
+        return (
+          command.type === "turn.cancel" &&
+          command.turnId === scope.turnId &&
+          record === scope.record &&
+          record.session === scope.session &&
+          record.generation === scope.generation
+        );
+      } catch {
+        return false;
+      }
+    }
+    function promoteCancellation(): void {
+      if (state.closed || priorityCancellation || !pendingSteer) return;
+      const index = waitingRequests.findIndex(({ request }) => matchesPendingStop(request));
+      if (index < 0) return;
+      const entry = waitingRequests.splice(index, 1)[0];
+      if (!entry) return;
+      priorityCancellation = entry;
+      void reply(entry.request)
+        .catch(() => socket.destroy())
+        .finally(() => {
+          priorityCancellation = undefined;
+          entry.finish();
+          drainRequests();
+        });
+    }
+    function drainRequests(): void {
+      if (state.closed) {
+        for (const entry of waitingRequests.splice(0)) entry.finish();
+        return;
+      }
+      promoteCancellation();
+      // A receipt may settle before cancellation; ordinary mutations still wait for both.
+      if (activeRequest || priorityCancellation) return;
+      const entry = waitingRequests.shift();
+      if (!entry) {
+        receiptWindow = false;
+        return;
+      }
+      activeRequest = entry;
+      void reply(entry.request)
+        .catch(() => socket.destroy())
+        .finally(() => {
+          activeRequest = undefined;
+          entry.finish();
+          drainRequests();
+        });
+    }
+    function enqueueRequest(request: HarnessBrokerRequest): Promise<undefined> {
+      const done = Promise.withResolvers<undefined>();
+      waitingRequests.push({
+        request,
+        finish() {
+          state.queuedFrames -= 1;
+          scheduleIdle();
+          done.resolve(undefined);
+        },
+      });
+      drainRequests();
+      return done.promise;
+    }
+
     consumeBrokerFrames(
       socket,
       (raw) => {
@@ -999,6 +1109,7 @@ export async function startHarnessBrokerServer(input: {
           socket.destroy();
           return;
         }
+        let trackedExecution = false;
         state.queue = state.queue
           .then(async () => {
             if (state.closed) return;
@@ -1038,20 +1149,14 @@ export async function startHarnessBrokerServer(input: {
               });
               return;
             }
-            try {
-              await respond(parsed.data, { ok: true, value: await handleRequest(parsed.data) });
-            } catch (error) {
-              await respond(parsed.data, {
-                ok: false,
-                error: protocolError(error instanceof Error ? error.message : String(error)),
-              });
-            } finally {
-              // One authenticated connection intentionally serializes requests. This bounds
-              // native Harness concurrency at one while the client bounds queued requests.
-            }
+            const execution = enqueueRequest(parsed.data);
+            trackedExecution = true;
+            // Only a new tokenized steer opens admission while its receipt is pending.
+            // Authentication and sequence checks above remain in input order.
+            if (!receiptWindow) await execution;
           })
           .finally(() => {
-            state.queuedFrames -= 1;
+            if (!trackedExecution) state.queuedFrames -= 1;
             scheduleIdle();
           })
           .catch(() => {
@@ -1063,6 +1168,7 @@ export async function startHarnessBrokerServer(input: {
 
     socket.once("close", () => {
       state.closed = true;
+      drainRequests();
       connections.delete(state);
       for (const sessionId of [...state.sessions]) {
         const record = sessions.get(sessionId);
