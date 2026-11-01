@@ -9,6 +9,7 @@ export * from "./usage-statistics.js";
 export * from "./thread-prewarm.js";
 export * from "./thread-questions.js";
 export * from "./side-chat-library.js";
+export * from "./side-chat-features.js";
 export {
   CONSOLE_HOST_METHODS,
   CONSOLE_OPEN_METHOD,
