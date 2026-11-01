@@ -155,4 +155,50 @@ describe("diagnosis: current main-RPC steering replacement", () => {
       await stopFixture(f.fixture);
     }
   });
+
+  it("rebuilds replacement history without the steering client ID and lists an independent empty Host queue", async () => {
+    const f = await scenario(false);
+    try {
+      f.session.completeCancellationOnRequest();
+      const reply = await f.submit();
+      expect(reply.error).toBeUndefined();
+      const newTurnId = (reply.result as JsonObject).turnId;
+      if (typeof newTurnId !== "string") throw new Error("Missing real replacement identity");
+      await f.fixture.collector.waitFor((message) => turnEvent(message, "turn/started", newTurnId));
+      f.session.appendText("SYNTHETIC_REPLACEMENT_REPLY");
+      f.session.succeedTurn();
+      await f.fixture.collector.waitFor((message) =>
+        turnEvent(message, "turn/completed", newTurnId),
+      );
+      writeRequest(f.fixture.desktopInput, {
+        id: 31,
+        method: "thread/read",
+        params: { threadId: f.threadId, includeTurns: true },
+      });
+      const read = await f.fixture.collector.waitFor((message) => requestId(message, 31));
+      expect(read.error).toBeUndefined();
+      const thread = (read.result as JsonObject).thread as JsonObject;
+      const turns = thread.turns as JsonObject[];
+      const replacement = turns.find((turn) => turn.id === newTurnId);
+      expect(replacement).toMatchObject({ id: newTurnId, status: "completed" });
+      const users = (replacement?.items as JsonObject[]).filter(
+        (item) => item.type === "userMessage",
+      );
+      expect(users).toEqual([
+        expect.objectContaining({
+          clientId: null,
+          content: [expect.objectContaining({ type: "text", text: input })],
+        }),
+      ]);
+      writeRequest(f.fixture.desktopInput, {
+        id: 32,
+        method: "thread/queue/list",
+        params: { threadId: f.threadId },
+      });
+      const queue = await f.fixture.collector.waitFor((message) => requestId(message, 32));
+      expect(queue).toEqual({ id: 32, result: { data: [], nextCursor: null } });
+    } finally {
+      await stopFixture(f.fixture);
+    }
+  });
 });
