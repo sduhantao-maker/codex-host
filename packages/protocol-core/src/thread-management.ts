@@ -61,6 +61,7 @@ export interface HostThreadListCursor {
 
 export interface DecodedThreadListRequest {
   params: JsonObject;
+  hideSideChats?: boolean;
   /** Undefined lists normal chats; a string selects one parent's attached chats. */
   attachedToThreadId?: string | null;
   archived: boolean;

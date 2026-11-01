@@ -112,7 +112,7 @@ function includesExternalRecord(
   const sourceKind = record.subagent ? "subAgentThreadSpawn" : "vscode";
   if (typeof query.attachedToThreadId === "string") {
     if (record.attachedToThreadId !== query.attachedToThreadId) return false;
-  } else if (record.attachedToThreadId) {
+  } else if (query.hideSideChats && !query.archived && record.attachedToThreadId) {
     return false;
   }
   const scoped = query.parentThreadId !== null || query.ancestorThreadId !== null;
@@ -230,6 +230,8 @@ export function externalThreadListEntries(input: ExternalThreadListInput): Threa
         record,
         turns: [],
         sessionId,
+        includeSideChatMetadata:
+          input.query.hideSideChats === true || typeof input.query.attachedToThreadId === "string",
         ...(runtime ? { running: runtime.running } : { loaded: false }),
         ...(placement ? { placement } : {}),
       });

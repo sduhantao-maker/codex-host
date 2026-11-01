@@ -222,6 +222,7 @@ export class ExternalThreadRuntime {
   readonly #diagnose: (error: unknown) => void;
   readonly #environment: NodeJS.ProcessEnv;
   readonly #repository: ExternalThreadRepository;
+  readonly #persistentSideChats: () => boolean;
   readonly #lifecycle = new ExternalThreadLifecycle();
   readonly #hasRunningDescendants: (threadId: string) => boolean;
   readonly #steeredTurnIds = new Map<string, Set<HostTurnId>>();
@@ -232,6 +233,7 @@ export class ExternalThreadRuntime {
     adapters: Map<ExternalHarnessId, HarnessAdapter>;
     environment?: NodeJS.ProcessEnv;
     repository: ExternalThreadRepository;
+    persistentSideChats?: () => boolean;
     consumeOutputs(thread: ExternalThread): Promise<void>;
     diagnose(error: unknown): void;
     subagentRunning?(threadId: string): boolean;
@@ -245,6 +247,7 @@ export class ExternalThreadRuntime {
     this.#adapters = input.adapters;
     this.#environment = input.environment ?? process.env;
     this.#repository = input.repository;
+    this.#persistentSideChats = input.persistentSideChats ?? (() => false);
     this.#consumeOutputs = input.consumeOutputs;
     this.#diagnose = input.diagnose;
     this.#subagentRunning = input.subagentRunning ?? (() => false);
@@ -434,7 +437,9 @@ export class ExternalThreadRuntime {
       persistenceError: null,
       projectedTerminalTurnId: null,
       ignoredInteractionIds: new Set(),
-      pendingInjectedText: [...(input.record.pendingInjectedText ?? [])],
+      pendingInjectedText: this.#persistentSideChats()
+        ? [...(input.record.pendingInjectedText ?? [])]
+        : [],
       sessionUnavailable: false,
       steeredTurnIds,
     };
@@ -812,6 +817,7 @@ export class ExternalThreadRuntime {
   }
 
   async flushInjectedText(thread: ExternalThread): Promise<void> {
+    if (!this.#persistentSideChats()) return;
     if (
       JSON.stringify(thread.record.pendingInjectedText ?? []) ===
       JSON.stringify(thread.pendingInjectedText)

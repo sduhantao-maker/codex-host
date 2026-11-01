@@ -57,7 +57,7 @@ describe("External Thread metadata catalog", () => {
     const list = (params: JsonObject) =>
       listExternalThreadMetadata({
         records: [parent, side, other],
-        query: query(params),
+        query: { ...query(params), hideSideChats: true },
         runtimeFor: () => null,
       }).data.map(({ thread }) => thread);
     expect(list({}).map(({ id }) => id)).toEqual(["parent"]);

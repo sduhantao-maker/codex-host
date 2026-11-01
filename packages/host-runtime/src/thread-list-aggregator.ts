@@ -83,6 +83,7 @@ function cursorValue(input: {
 
 export async function aggregateThreadList(input: {
   query: DecodedThreadListRequest;
+  hideSideChats?: boolean;
   records: readonly StoredThreadRecordV1[];
   sharedThreads?: readonly JsonObject[];
   excludedOfficialThreadIds?: ReadonlySet<string>;
@@ -108,7 +109,7 @@ export async function aggregateThreadList(input: {
     : listExternalThreadMetadata({
         records: input.records,
         ...(input.sharedThreads ? { sharedThreads: input.sharedThreads } : {}),
-        query,
+        query: { ...query, hideSideChats: input.hideSideChats === true },
         runtimeFor: input.runtimeFor,
         ...(input.placementOf ? { placementOf: input.placementOf } : {}),
         anchor: start.externalAnchor,

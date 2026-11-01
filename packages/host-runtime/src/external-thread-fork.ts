@@ -36,6 +36,9 @@ export type ExternalThreadForkResult =
 
 export async function executeExternalThreadFork(input: {
   source: ExternalThread;
+  allowActiveSideChatFork?: boolean;
+  diagnose?(error: unknown): void;
+  activeSideChatRequested?: boolean;
   fork: DecodedThreadForkRequest;
   adapters: Map<ExternalHarnessId, HarnessAdapter>;
   repository: ExternalThreadRepository;
@@ -102,35 +105,28 @@ export async function executeExternalThreadFork(input: {
     | undefined = mappings[boundaryIndex];
   let capturedActiveBoundary = false;
   if (
-    fork.attachToSource &&
+    input.allowActiveSideChatFork &&
+    (fork.attachToSource || input.activeSideChatRequested) &&
     source.running &&
     !fork.lastTurnId &&
     !fork.beforeTurnId &&
     source.session.captureActiveForkBoundary
   ) {
-    const captured = await source.session.captureActiveForkBoundary();
-    if (!captured.ok)
-      return { ok: false, error: mapExternalThreadHarnessError(captured.error, "fork") };
+    const captured = await source.session.captureActiveForkBoundary().catch(() => null);
     const nativeRef = source.record.nativeSessionRef;
     if (
-      !nativeRef ||
-      captured.value.turnId !== source.activeTurnId ||
-      captured.value.checkpoint.harnessId !== source.harnessId ||
-      captured.value.checkpoint.nativeSessionId !== nativeRef.nativeSessionId
+      captured?.ok &&
+      nativeRef &&
+      captured.value.turnId === source.activeTurnId &&
+      captured.value.checkpoint.harnessId === source.harnessId &&
+      captured.value.checkpoint.nativeSessionId === nativeRef.nativeSessionId
     ) {
-      return {
-        ok: false,
-        error: {
-          code: -32080,
-          message: "Active Fork boundary changed; retry after the source settles",
-        },
+      boundary = {
+        hostTurnId: captured.value.turnId,
+        nativeCheckpointRef: captured.value.checkpoint,
       };
+      capturedActiveBoundary = true;
     }
-    boundary = {
-      hostTurnId: captured.value.turnId,
-      nativeCheckpointRef: captured.value.checkpoint,
-    };
-    capturedActiveBoundary = true;
   }
   // Native history may have split this boundary Turn while Desktop still shows it whole.
   if (boundary && !capturedActiveBoundary && source.steeredTurnIds.has(boundary.hostTurnId)) {
@@ -249,14 +245,20 @@ export async function executeExternalThreadFork(input: {
       snapshot.value,
     );
     if (fork.attachToSource && source.record.projectId) {
-      aligned.record = await repository.updateMetadata(aligned.record.hostThreadId, {
-        projectId: source.record.projectId,
-      });
+      aligned.record = await repository
+        .updateMetadata(aligned.record.hostThreadId, {
+          projectId: source.record.projectId,
+        })
+        .catch((error: unknown) => {
+          input.diagnose?.(error);
+          return aligned.record;
+        });
     }
     const thread = externalThreadValue({
       record: aligned.record,
       turns: aligned.turns,
       sessionId: source.sessionId,
+      includeSideChatMetadata: fork.attachToSource === true,
     });
     const derived = runtime.register({
       record: aligned.record,

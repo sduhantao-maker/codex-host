@@ -581,6 +581,7 @@ export function externalThreadValue(input: {
   running?: boolean;
   loaded?: boolean;
   placement?: StoredSectionPlacementV1;
+  includeSideChatMetadata?: boolean;
 }): JsonObject {
   const { record } = input;
   const createdAt = Math.floor(Date.parse(record.createdAt) / 1_000);
@@ -651,8 +652,13 @@ export function externalThreadValue(input: {
         }
       : null,
     forkedFromId: record.forkSource?.hostThreadId ?? null,
-    attachedToThreadId: record.attachedToThreadId ?? null,
-    ...(record.sideChatOrigin
+    ...(input.includeSideChatMetadata
+      ? {
+          attachedToThreadId: record.attachedToThreadId ?? null,
+          codexhostArchived: record.archived,
+        }
+      : {}),
+    ...(input.includeSideChatMetadata && record.sideChatOrigin
       ? {
           codexhostSideChatOrigin: {
             threadId: record.sideChatOrigin.threadId,
