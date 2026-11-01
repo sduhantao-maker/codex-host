@@ -161,6 +161,8 @@ export interface TurnSteerCommand {
   type: "turn.steer";
   turnId: HostTurnId;
   input: HostTextInput[];
+  /** Opt-in correlation for a Session advertising steerLifecycle; no display text crosses this seam. */
+  steerId?: HostItemId | undefined;
 }
 
 export interface TurnCancelCommand {
@@ -290,6 +292,8 @@ export interface TurnStartAccepted {
 
 export interface TurnSteerAccepted {
   accepted: true;
+  /** The Session will emit turn.steer.started/cancelled for this command's steerId. */
+  projection?: "deferred";
 }
 
 export interface TurnCancelAccepted {
@@ -574,6 +578,13 @@ export type HostEvent =
   | SubagentTranscriptChangedEvent
   | TurnStartedEvent
   | AutonomousTurnStartedEvent
+  | { type: "turn.steer.started"; turnId: HostTurnId; steerId: HostItemId }
+  | {
+      type: "turn.steer.cancelled";
+      turnId: HostTurnId;
+      steerId: HostItemId;
+      reason: "cancelled" | "discarded" | "refused";
+    }
   | ItemStartedEvent
   | ItemUpdatedEvent
   | ItemCompletedEvent
@@ -588,6 +599,12 @@ export type HarnessOutput =
 export interface HarnessSession {
   readonly harnessId: HarnessId;
   readonly capabilities: HarnessSessionCapabilities;
+  /**
+   * Only commands carrying steerId opt in; older Hosts keep acceptance-time projection.
+   * Implementations reserve/write opted-in input synchronously before awaiting its receipt,
+   * allowing an explicit cancellation to preempt that receipt wait safely.
+   */
+  readonly steerLifecycle?: true | undefined;
   readonly initialState: HarnessSessionState;
   /**
    * Immutable identity reserved for this Session's native writes, when known before native

@@ -185,6 +185,7 @@ function sessionMetadata(record: ServerSession): object {
     sessionGeneration: record.generation,
     capabilities: record.session.capabilities,
     readCapabilities: true,
+    ...(record.session.steerLifecycle ? { steerLifecycle: true } : {}),
     initialState: {
       ...initialState,
       ...(record.nativeRef ? { nativeRef: record.nativeRef } : {}),

@@ -30,6 +30,28 @@ function projector(): CodexTurnProjector {
 }
 
 describe("Codex UI projector", () => {
+  it("does not turn Host steering lifecycle receipts into Codex Items or extra Turns", () => {
+    const value = projector();
+    value.project({ type: "turn.started", turnId });
+    const steerId = itemId("pending-steer");
+    expect(value.project({ type: "turn.steer.started", turnId, steerId }).messages).toEqual([]);
+    expect(
+      value.project({ type: "turn.completed", turnId, outcome: { status: "succeeded" } })
+        .completedTurn?.status,
+    ).toBe("completed");
+    expect(
+      value.project({ type: "turn.steer.cancelled", turnId, steerId, reason: "cancelled" })
+        .messages,
+    ).toEqual([]);
+    expect(() =>
+      value.project({
+        type: "turn.steer.started",
+        turnId: hostTurnIdSchema.parse("other"),
+        steerId,
+      }),
+    ).toThrow("another Turn");
+  });
+
   it("omits terminal Reasoning line breaks in live and historical Desktop text", () => {
     const value = projector();
     const reasoningId = itemId("line-break-reasoning");

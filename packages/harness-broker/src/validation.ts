@@ -8,6 +8,7 @@ import {
   harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
   hostInteractionIdSchema,
+  hostItemIdSchema,
   hostTurnIdSchema,
   jsonObjectSchema,
   nativeCheckpointRefSchema,
@@ -139,6 +140,7 @@ const turnSteerSchema = z
     type: z.literal("turn.steer"),
     turnId: hostTurnIdSchema,
     input: z.array(textInputSchema),
+    steerId: hostItemIdSchema.optional(),
   })
   .strict();
 const turnCancelSchema = z
@@ -273,6 +275,8 @@ const eventKeys = new Map<string, ReadonlySet<string>>([
   ["subagent.transcript.changed", new Set(["type", "nativeSubagentId"])],
   ["turn.started", new Set(["type", "turnId"])],
   ["turn.autonomous.started", new Set(["type", "turnId", "input"])],
+  ["turn.steer.started", new Set(["type", "turnId", "steerId"])],
+  ["turn.steer.cancelled", new Set(["type", "turnId", "steerId", "reason"])],
   ["item.started", new Set(["type", "turnId", "item"])],
   ["item.updated", new Set(["type", "turnId", "itemId", "update"])],
   ["item.completed", new Set(["type", "turnId", "snapshot"])],
@@ -325,6 +329,14 @@ export const harnessOutputSchema = z.custom<HarnessOutput>((value) => {
       return harnessSessionStateSchema.safeParse(event.state).success;
     if (event.type === "session.faulted") return harnessErrorSchema.safeParse(event.error).success;
     if (event.type === "usage.history") return typeof event.complete === "boolean";
+    if (event.type === "turn.steer.started" || event.type === "turn.steer.cancelled") {
+      return (
+        hostTurnIdSchema.safeParse(event.turnId).success &&
+        hostItemIdSchema.safeParse(event.steerId).success &&
+        (event.type === "turn.steer.started" ||
+          ["cancelled", "discarded", "refused"].includes(String(event.reason)))
+      );
+    }
     return true;
   }
   if (output.kind === "interaction") {
