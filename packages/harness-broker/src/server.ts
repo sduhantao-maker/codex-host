@@ -866,8 +866,8 @@ export async function startHarnessBrokerServer(input: {
       }
       if (request.method === "session.captureActiveForkBoundary") {
         const session = requireSession(request.params).session;
-        return session.captureActiveForkBoundary
-          ? session.captureActiveForkBoundary()
+        const result = session.captureActiveForkBoundary
+          ? await session.captureActiveForkBoundary()
           : {
               ok: false,
               error: {
@@ -876,6 +876,9 @@ export async function startHarnessBrokerServer(input: {
                 retryable: false,
               },
             };
+        if (requireSession(request.params).session !== session)
+          throw new Error("Harness broker Session generation is stale");
+        return result;
       }
       if (request.method === "session.refreshUsage") {
         const record = requireSession(request.params);
@@ -1012,6 +1015,7 @@ export async function startHarnessBrokerServer(input: {
           socket.destroy();
           return;
         }
+        let detached = false;
         state.queue = state.queue
           .then(async () => {
             if (state.closed) return;
@@ -1051,20 +1055,32 @@ export async function startHarnessBrokerServer(input: {
               });
               return;
             }
-            try {
-              await respond(parsed.data, { ok: true, value: await handleRequest(parsed.data) });
-            } catch (error) {
-              await respond(parsed.data, {
-                ok: false,
-                error: protocolError(error instanceof Error ? error.message : String(error)),
-              });
-            } finally {
-              // One authenticated connection intentionally serializes requests. This bounds
-              // native Harness concurrency at one while the client bounds queued requests.
+            const reply = async (): Promise<void> => {
+              try {
+                await respond(parsed.data, { ok: true, value: await handleRequest(parsed.data) });
+              } catch (error) {
+                await respond(parsed.data, {
+                  ok: false,
+                  error: protocolError(error instanceof Error ? error.message : String(error)),
+                });
+              }
+            };
+            if (parsed.data.method === "session.captureActiveForkBoundary") {
+              // Read-only boundary capture must not queue parent cancellation or approvals.
+              detached = true;
+              void reply()
+                .finally(() => {
+                  state.queuedFrames -= 1;
+                  scheduleIdle();
+                })
+                .catch(() => socket.destroy());
+            } else {
+              // Keep all native mutations serialized in authenticated request order.
+              await reply();
             }
           })
           .finally(() => {
-            state.queuedFrames -= 1;
+            if (!detached) state.queuedFrames -= 1;
             scheduleIdle();
           })
           .catch(() => {
