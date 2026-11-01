@@ -218,6 +218,48 @@ describe("External Side Chat context persistence", () => {
     }
   });
 
+  it("does not fault the native session when optional context clearing still fails at completion", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "codexhost-inject-terminal-failure-"));
+    let rejectClear = false;
+    const store = new MappingStore({
+      directory,
+      beforeReplace(record) {
+        if (
+          rejectClear &&
+          Array.isArray(record.pendingInjectedText) &&
+          record.pendingInjectedText.length === 0
+        )
+          throw new Error("synthetic persistent clear failure");
+      },
+    });
+    const fixture = createFixture({
+      mappingStore: store,
+      mappingStoreDirectory: directory,
+      sideChatFeatures: { persistentSideChats: true },
+    });
+    try {
+      const threadId = await startPiThread(fixture);
+      await inject(fixture, threadId, 2, "Only once in this process.");
+      await vi.waitFor(async () =>
+        expect(
+          (await store.getThread(hostThreadIdSchema.parse(threadId)))?.pendingInjectedText,
+        ).toEqual(["Only once in this process."]),
+      );
+      rejectClear = true;
+      await completePiTurn(fixture, threadId, 3);
+      rejectClear = false;
+      await completePiTurn(fixture, threadId, 4);
+      expect(fixture.adapter.sessions[0]?.persistedSnapshot().turns.at(-1)?.input).toEqual([
+        { type: "text", text: "synthetic" },
+      ]);
+      expect(
+        (await store.getThread(hostThreadIdSchema.parse(threadId)))?.pendingInjectedText,
+      ).toEqual([]);
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
   it("keeps an accepted native Turn running when clearing context fails, then retries at completion", async () => {
     const directory = mkdtempSync(path.join(tmpdir(), "codexhost-inject-clear-failure-"));
     let rejectClear = false;

@@ -809,7 +809,7 @@ export class ExternalThreadRuntime {
         event.nativeTurnRef,
         event.outcome.checkpoint,
       );
-      await this.flushInjectedText(thread);
+      await this.flushInjectedText(thread).catch((error: unknown) => this.#diagnose(error));
       return null;
     } catch (error) {
       const failure = error instanceof Error ? error : new Error(errorMessage(error));

@@ -26,7 +26,7 @@ Mapping Store 根目录中的 `side-chat-collection.json` 使用 `formatVersion:
 
 `list({ sourceThreadId?, collected? })` 返回 `{ items }`。指定来源时，从该来源的权威 attached 列表与全部已登记或已收纳条目合并候选，再逐条核验；不指定来源时只列已收纳条目。`collected` 可筛选收纳状态。
 
-`update({ threadId, collected, archived? })` 先读取实际来源，再更新索引并返回 `{ item }`。请求不接受调用者提供的来源项目、父对话或标题。重复收纳保留首次收纳时间，取消后再次收纳记为新的收纳时间。归档操作先完成原生归档，再取消收纳并保存归档标记；后一步失败不把已成功的原生操作改报失败。
+`update({ threadId, collected, archived? })` 先读取实际来源，再更新索引并返回 `{ item }`。请求不接受调用者提供的来源项目、父对话或标题。重复收纳保留首次收纳时间，取消后再次收纳记为新的收纳时间。归档操作先保留当前来源和收纳状态，再执行原生归档，随后取消收纳并保存归档标记。任一步索引失败都不阻断原生动作，也不把已成功的原生操作改报失败。
 
 列表项包含 `threadId`、`sourceThreadId`、`projectId`、`title`、`collected`，来源不可用时另含 `sourceAvailable: false`，归档时另含 `archived: true`。归档项退出集中收纳列表，按来源查询时仍可识别并解除归档。恢复侧聊、转主及不过期生命周期由各自原生 Thread 通道负责，收纳服务不通过给父对话注入历史来实现这些行为。
 
