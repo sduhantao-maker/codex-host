@@ -1,50 +1,78 @@
-# 个人 Fork stable 维护
+# 个人 Fork 的 stable 与 sidechat 维护
 
-`iverson/stable` 是个人 Fork 的日常候选线，源码位于 `/Users/iverson/Code/codex-host-stable`。`origin` 指向 [sduhantao-maker/codex-host](https://github.com/sduhantao-maker/codex-host)，`upstream` 指向 [BytePioneer-AI/codex-host](https://github.com/BytePioneer-AI/codex-host)。`main` 保留上游基线；实验性侧聊功能及其未提交改动留在独立的 `iverson/sidechat` 工作树。
+日常候选线是 `iverson/stable`，源码位于 `/Users/iverson/Code/codex-host-stable`。本文件所在的 `iverson/sidechat` 是功能审阅线，源码位于 `/Users/iverson/Code/codex-host-sidechat`。sidechat 只有在 stable 已实际稳定运行、功能线通过约定检查并且用户明确同意后，才可进入日常安装包。
 
-stable 基于 v0.16.1，保留原样的 #564 cherry-pick 和受控升级提交，再用独立提交修正已核实的兼容性差异。收纳界面、永久侧聊、运行中侧聊分叉及实验开关不属于本分支。分支名称和构建成功都不等于已经通过日常验收。
+`origin` 指向个人 Fork，`upstream` 指向作者仓库。功能线通过 merge 对齐 stable，不 rebase，不改写已推送历史；原 #564 cherry-pick 保持在历史中。委派入口只合并待注入文本，保持 stable 第二版的原文发送行为；远程同版本 restart-only 也沿用 stable 的修复。
 
-## 行为范围
+## 默认关闭与热切换
 
-#564 让闲置、可写的外部 Thread 接受文本型 `thread/inject_items`，将其与下一条真实输入合并。委派入口保留原始任务文本，只合并待注入内容；Desktop 输入入口维持上游的提及处理。原生 Codex 侧聊继续使用原生路径。
+三个开关默认全部关闭，分别控制持久侧聊、收纳界面和 Claude 运行中侧聊分叉。配置文件是 `~/.codexhost/sidechat-features.json`；若设置了 `CODEXHOST_DATA_DIR`，则使用该目录中的同名文件。
 
-待注入文本只保存在 Host 进程内。首条真实消息之前重启 Host，不能保证保留这段文本；stable 不承诺侧聊永久保存。没有可用 Fork checkpoint 的情况也不能列成 #564 已修复的能力。
+```json
+{
+  "persistentSideChats": false,
+  "sideChatLibrary": false,
+  "claudeActiveSideChatFork": false
+}
+```
 
-## 受控安装与远程重启
+将对应值设为 `false` 即关闭。Host 监听文件变化，配置热读后通知已连接的 Renderer，无需重新构建或重启应用。文件缺失时使用全部关闭的设置；损坏或不可读取时同样全关并记录诊断。已有会话和索引不会因为关闭开关而被删除。
 
-更新页保留上游版本和发布说明查询，显示个人构建的受控升级说明，不提供会改变本地安装版本的官方包安装入口。新的安装包通过 Fork 的合并、验证和构建流程产生。
+`claudeActiveSideChatFork` 可独立用于临时侧聊，不要求先开启持久化；它不会自动改变 `ephemeral` 或创建附属关系。逐个开启验收时，每次只将一个字段改为 `true`，其余两个保持 `false`。
 
-远程 npm Host 已安装版本与请求版本相同、且 `restartRequired` 为真时，允许原有的 restart-only 路径，使运行版本切换到已经安装的版本。相同版本且无需重启时，保持上游的无操作结果。改变已安装版本的请求仍被拒绝，并返回受控升级说明；调度后、启动辅助进程前还会复核版本，避免安装状态变化把重启变成安装。
+开发工具也可使用 `codexhost/sideChat/features/get` 读取设置与宿主能力，或用 `codexhost/sideChat/features/set` 发送三个字段的部分更新。`codexhost/sideChat/features/changed` 通知携带更新后的设置与能力。设置开启不代表宿主具备能力；仅已确认支持的本机宿主可使用持久创建改写，远程或能力未知的宿主保留原生请求。
 
-`updateSupported` 表示原有运行时资源能力，不单独表示允许安装。Renderer 应同时使用 `installationDisabledReason` 和 `restartRequired`，保留同版本重启按钮，隐藏改变版本的安装操作。SSH 的 `setupSsh(action: "update")` 会执行安装，仍受禁更策略限制；连接检查和修复保留。
+全关行为以 stable 第二版为基准。测试需覆盖不改写原始 fork、普通 fork 保持原逻辑、列表不读取收纳索引、原有 Agent/模型绑定不受新增控件失败影响。构建身份的显示是明确要求的审阅标记，不参与版本比较。真实日常 A/B 仍须在用户选定的窗口执行，单元测试不能代替它。
 
-## 验证与同步上游
+## 功能和错误边界
 
-每次合并上游都记录候选提交、上游 Tag 与提交、Node/Rust 版本、Codex Desktop 版本和构建号。先核对 `git rev-parse --show-toplevel`，确认当前是预期的独立工作树；若返回 `/Users/iverson` 就停止 Git 操作。不要切换、清理或覆盖另一条线的未提交改动。
+持久侧聊继续使用原生会话及其历史。来源登记与手动收纳是元数据；不通过向父对话追加消息或摘要实现恢复。原生创建成功后的登记失败只记诊断，并有限次后台补登记，不把登记失败变成创建错误。索引不可用时，旧格式历史恢复临时侧聊参数；分页历史保留原生参数与结果。
 
-1. 选定上游稳定 Tag，在独立集成工作树合并，不把未经验证的上游 `main` 直接装入日常环境。
-2. 使用 Node 24 和 `rust-toolchain.toml` 固定的 Rust 版本。对测试子进程设置新的临时 HOME，清除真实凭据和 live-test opt-in 环境；不修改全局环境或配置。
-3. 运行完整 `npm run check` 和完整 `npm run test:e2e`。基线与候选使用相同环境和并行度，各自安装依赖，workspace 链接必须指向各自源码。
-4. 若 `npm run check` 因前一阶段失败而短路，单独补跑剩余阶段，同时保留原命令的失败状态。逐项对照基线失败；不能通过改断言、放宽超时或只保留复跑成功来获得通过结论。新增的稳定复现失败须继续排查。
-5. 按同一份实机 A/B 清单验证日常功能。固定模型、权限和测试目录，区分 Host 排队延迟与模型响应时间。真实会话、重启、审批和远程重启只在用户批准的窗口执行。
-6. 通过约定验收并由用户决定切换后，才将候选作为日常版本。保留上一可用 App、数据归档、对应提交和验收记录；更新失败时保留当前安装。
+注入上下文先进入侧聊自身的内存，再按该线程顺序持久化；仅该线程的下一轮发送等待写入，其他线程的停止、审批和发送不等待它。写入失败保留原生内存续聊并记录诊断，不把未写入的内容报告为已持久保存。持久化开关热关闭也会释放下一轮发送的等待，保留原生内存路径。
 
-## DMG 切换与回退
+Claude 普通 fork 使用原有检查点路径。运行中侧聊的严格前缀只用于明确标记的活动分叉，工具调用和结果按 `parentUuid` 主链配对，不让废弃分支的悬空工具调用阻断普通 fork。捕获不可用时保留原来的已完成检查点策略；没有可用检查点仍是原有限制，不能伪造已完成历史或停止父回合。
 
-本机使用 DMG 安装。**切换以该候选交付目录中的 `stable-v2-dmg-switch-runbook.md`、A/B 清单和产物校验记录为准**，不要使用 `install-local.sh`，也不要从旧报告复制 SHA。
+收纳界面失败与原 Renderer 绑定隔离，关闭界面不会删除会话。列表读取失败记录诊断；不支持新方法的共享 peer 降级到本地结果。归档入口复用原生归档并保留来源记录，归档项退出收纳列表。侧聊本身可读但来源已不可读时显示来源不可用，保留访问与归档入口；无权读取侧聊本身时不展示它。
 
-日常候选包保存在 `/Volumes/Iverson/codexhost-sidechat/releases/stable/`；验证记录保存在外盘 `verification/stable-v2/`；App、Git bundle 和数据归档保存在 `backups/`。外盘为 ExFAT，App 先在内置盘封装成 DMG/ZIP，不能用外盘上的散装 App 目录代替保留权限和符号链接的归档。
+## 构建身份
 
-切换前应在应用正常退出、相关后台进程和数据占用者均停止后，归档 `/Users/iverson/.codexhost` 和 `/Users/iverson/.codex`。归档记录 SHA-256、常规文件/目录/符号链接数量，并验证权限和链接读回。这两处不包含 `.claude` 等其他 Harness 自有存储，不能称为所有 Harness 历史的完整备份。
+设置的关于页和更新页显示 `0.16.1+sidechat.<sha>`，源码未提交时带 `.dirty`。载荷的 `personal-build.json` 记录完整提交、基础版本和工作区状态。macOS `Info.plist` 包含 `CodexHostPersonalBuild`、`CodexHostBuildIdentity` 和 `CodexHostSourceCommit`。
 
-操作单要求先保存当前 App，再校验候选 DMG、只读挂载、用 `ditto` 替换原路径、验签，并核对 `Contents/Resources/app/host-runtime.mjs` 的 SHA-256。首次启动后还须在设置页确认受控升级说明。回退先保留切换后产生的数据及当前 App，再从已验证的官方 ZIP 解到内置盘新目录；程序回退不自动回退数据。
+`package.json`、`CFBundleVersion`、`CFBundleShortVersionString`、更新协议与语义版本比较继续使用基础版本。最终审阅包从已提交且干净的工作树构建，并核对 UI、Info.plist、身份文件及验收记录中的提交一致。缺失或不一致的身份不能用一个猜测的 SHA 代替。
 
-若以后启用了实验线并创建 legacy 持久侧聊，退回官方版后，这些聊天可能作为普通对话出现在侧栏。不要把这一展示变化误判为数据合并或批量删除它们。
+## 受控升级与远程重启
 
-`npm start` 和 `tools/dev-desktop/run.mjs` 会停止当前 Codex Desktop，不能当作构建检查。构建、自动化测试、签名验证通过，都不能代替真实切换与回退演练。
+更新页保留上游版本与发布说明查询，显示个人构建的受控升级说明，不提供改变已安装版本的官方包安装入口。新的个人安装包经合并、检查和构建后交由用户选择切换时间。
+
+远程 npm Host 请求版本与已安装版本相同且需要重启时，保留 stable 第二版的 restart-only 行为；同版本且无需重启时仍为无操作结果。改变版本的请求返回受控升级说明。`updateSupported` 仍表示原有运行时能力，Renderer 同时依据 `installationDisabledReason` 与 `restartRequired` 保留同版本重启入口。
+
+## 检查与同步上游
+
+每完成一个返工项先提交并运行对应回归，最终候选再执行完整检查。每次同步上游都遵循同样流程。
+
+1. 先检查 `git rev-parse --show-toplevel` 和工作区状态；若根目录为 `/Users/iverson` 就停止 Git 操作。保留另一工作树的未提交改动。
+2. 在集成分支 merge 选定的上游稳定 Tag 或 stable 提交，解决冲突时保留双方有效行为，不以强制同步覆盖个人改动。
+3. 使用 Node 24 和固定 Rust 工具链，为测试子进程创建临时 HOME，清除真实凭据及 live-test opt-in，不修改全局环境。
+4. 完整运行 `npm run check` 和完整 `npm run test:e2e`，与 stable 第二版同环境、同并行度对照。依赖链接各自指向各自工作树。若前阶段失败导致短路，单独补跑后续阶段并保留原命令失败状态。
+5. 比较具体失败名称和证据，不只比较数量；不改断言、放宽超时或用复跑成功覆盖首次失败。已确认的既有时序不稳项保留记录，同一项稳定复现时继续排查。
+6. 用同一份日常 A/B 清单验证全关，再逐个开启；每行记录实际操作、通过标准和差异。测试目录和任务使用合成内容，真实模型、停止/审批延迟及远程重启只在用户批准的窗口执行。
+
+Codex Desktop 更新可能改变私有界面和协议。静态契约检查只能证明绑定条件存在，不能替代实际发送、恢复和重启验证。若只开放 Renderer CDP，主进程 Inspector 未执行的部分应明确记录。
+
+## 备份、切换与回退
+
+sidechat 安装包仅供审阅，保存在外盘 `releases/sidechat/`，验证记录放 `verification/sidechat-rework/`。日常 stable 包仍放 `releases/stable/`。ExFAT 上保留 DMG、ZIP 或 tar，不用散装 App 目录代替权限和符号链接归档。
+
+切换使用对应候选交付目录的操作单，先正常退出并确认相关服务及数据占用者停止，再归档 `.codexhost`、`.codex`，记录 SHA-256、文件类型数量并试解包核验。两目录不涵盖 `.claude` 等所有 Harness 自有存储；不要把它称为所有历史的完整备份。
+
+本机使用 DMG。先保存当前 App，核对 DMG 与 `host-runtime.mjs` 的 SHA，再只读挂载、`ditto` 替换原位并验签。回退先保留新数据和当前 App，从已验证的官方 ZIP 解到内置盘新空目录；程序回退不自动恢复旧数据。恢复数据需要用户另行决定，不合并 SQLite 数据库，不删除 WAL/SHM 文件。
+
+关闭功能或回退到 stable/官方版后，legacy 持久侧聊可能作为普通对话出现在侧栏。这是展示回退，不表示合并进父对话；不要因此批量删除聊天。
+
+本阶段不运行 `npm start`、`tools/dev-desktop/run.mjs` 或 `install-local.sh`，不安装候选、启停真实应用或改动 `/Applications`。数据备份、实际切换与回退演练留待用户窗口。
 
 ## 分支备份与发布
 
-按用户授权可推送 `origin/iverson/stable` 作分支备份。Git bundle 只保存已提交 Git 对象，不能代替未提交改动或会话数据备份。凭据、真实聊天和原始运行日志不进入公开 Fork。
+按用户授权可推送 `origin/iverson/sidechat` 作代码备份。每份验收记录同时写明提交、stable 对照提交、Desktop 版本、构建号和检查环境。Git bundle 不能代替未提交改动或真实数据备份。
 
-不创建或推送 Tag，不发 GitHub Release 或 npm 包，不向上游开 PR。仓库发布工作流可能匹配 `v*` 标签，不能用 `git push --tags` 作普通备份。
+不打 Tag、不发 GitHub Release 或 npm 包、不向上游开 PR。凭据、真实聊天和原始运行日志不进入公开 Fork，也不用 `git push --tags` 当备份。
