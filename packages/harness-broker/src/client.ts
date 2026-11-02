@@ -78,6 +78,7 @@ interface SessionMetadata {
   sessionGeneration: number;
   capabilities: HarnessSessionCapabilities;
   readCapabilities: boolean;
+  steerLifecycle: boolean;
   initialState: HarnessSessionState;
   initialUsage: HostUsage | null;
   commands: boolean;
@@ -156,6 +157,7 @@ function parseSessionMetadata(value: unknown): SessionMetadata {
     sessionGeneration: candidate.sessionGeneration,
     capabilities: harnessSessionCapabilitiesSchema.parse(candidate.capabilities),
     readCapabilities: candidate.readCapabilities === true,
+    steerLifecycle: candidate.steerLifecycle === true,
     initialState: state,
     initialUsage: candidate.initialUsage === null ? null : parseHostUsage(candidate.initialUsage),
     commands: candidate.commands === true,
@@ -519,6 +521,9 @@ class BrokeredHarnessSession implements HarnessSession {
   }
   get capabilities(): HarnessSessionCapabilities {
     return this.#metadata.capabilities;
+  }
+  get steerLifecycle(): true | undefined {
+    return this.#metadata.steerLifecycle ? true : undefined;
   }
   get initialState(): HarnessSessionState {
     return this.#metadata.initialState;

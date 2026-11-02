@@ -1,5 +1,6 @@
 import type {
   HarnessError,
+  HostEvent,
   HostApprovalInteraction,
   HostFileChange,
   HostItem,
@@ -51,7 +52,8 @@ export type ProjectableHostEvent =
   | ItemCompletedEvent
   | ItemDetachedEvent
   | InteractionClosedEvent
-  | TurnCompletedEvent;
+  | TurnCompletedEvent
+  | Extract<HostEvent, { type: "turn.steer.started" | "turn.steer.cancelled" }>;
 
 export interface CodexTurnProjection {
   messages: JsonObject[];
@@ -900,6 +902,10 @@ export class CodexTurnProjector {
   project(event: ProjectableHostEvent, emittedAtMs = Date.now()): CodexTurnProjection {
     if (event.turnId !== this.#turnId) {
       throw new Error("Host output references another Turn");
+    }
+    // The Host consumes steering receipts; they are not Codex Items or Turn boundaries.
+    if (event.type === "turn.steer.started" || event.type === "turn.steer.cancelled") {
+      return { messages: [] };
     }
     if (
       this.#completed &&

@@ -3,16 +3,16 @@
 codexhost 对外部 Harness Thread 保留一个「调整方向」操作，按当前 Session 的能力选择送达方式：
 
 - **原生同轮插入**：Session 此刻声明 `capabilities.steer` 时，Host 发送公共命令 `turn.steer`，由 Adapter 调用 Harness 自己的插入原语，在原生安全边界把输入送入**当前 Turn**，不取消、不另起 Turn。
-- **停止后重发（退路）**：其余情况下，Host **取消当前 Turn，等待它终结，再自动执行本次新输入**。任何不确定能并入当前 Turn 的情况都走这条路径，保证不比没有原生插入时差。
+- **停止后重发（退路）**：其余情况下，Host **取消当前 Turn，等待它终结，再自动执行本次新输入**。不支持原生同轮窗口时沿用这条路径；客户端展示仍受下述 Desktop 版本边界约束。
 
-用户继续使用 Codex Desktop 原有按钮、跟进处理方式设置和单条消息反向操作，不需要手动停止后重发。官方 Codex Thread 仍透传原生 `turn/steer`，不改变同轮追加输入的语义。当前只有 Claude Code 会声明 `capabilities.steer`，并且只在确定插入会并入当前 Turn 时声明；其条件与原生依据见 [`../harnesses/claude-code/claude-code-steer.md`](../harnesses/claude-code/claude-code-steer.md)；其他 Adapter 对 `turn.steer` 返回 `unsupported`，保持停止后重发。
+用户继续使用 Codex Desktop 原有按钮、跟进处理方式设置和单条消息反向操作，不需要手动停止后重发。官方 Codex Thread 仍透传原生 `turn/steer`，不改变同轮追加输入的语义。当前只有 Claude Code 会声明 `capabilities.steer`。除工具期与 held 续态外，个人版也开放同时具有 `msg_lifecycle_v1` 和 `interrupt_cancel_queued_v1` 的生成期窗口；当前原生段结束后，引导仍可作为同一个 Host Turn 的后续段。缺少新增窗口所需能力时保持官方 v0.17.0 原路线。具体条件与原生依据见 [`../harnesses/claude-code/claude-code-steer.md`](../harnesses/claude-code/claude-code-steer.md)；其他 Adapter 对 `turn.steer` 返回 `unsupported`，保持停止后重发。
 
 ## 原生同轮插入
 
 - `HarnessSessionCapabilities.steer` 表示 Session 当前是否允许原生同轮插入；缺省表示不支持。直连 Adapter 可用普通属性或实时 getter。跨进程 Session 可提供 `readCapabilities()`，Host 在预判和未指定送达方式的执行请求中优先读取它；读取失败不使用旧快照发送输入。
 - Harness Broker 通过 `session.readCapabilities` 按需读取原生 Session 的能力，不轮询、不要求 Adapter 发布能力变更事件。打开响应声明是否支持这项查询；连接旧 Broker 时保持停止后重发，不向其发送未知方法。普通 Adapter 不必实现 `readCapabilities()`，Broker 可以直接读取它的 `capabilities`。
 - 能力查询不是对执行时机的预留。Adapter 在 `turn.steer` 最终写入之前必须再次检查目标 Turn 和原生插入条件；不满足时不写入并拒绝。GUI 已选择同轮展示时，拒绝只报错，不偷偷改走新轮。
-- `TurnSteerCommand { turnId, input }` 定义在 `packages/harness-adapter/src/text-session.ts`。Adapter 在 Harness 确认接受或入队后返回 `{ accepted: true }`，不等待插入实际执行完毕。返回失败即表示 Harness **没有收下**这条输入。已经写入但丢失回执不能作为未收下处理；Broker 对无法确认结果的请求抛错，不转换成触发停止后重发的拒绝结果。没有原生插入的 Adapter 用 `unsupportedSteer()` 拒绝。
+- `TurnSteerCommand { turnId, input, steerId? }` 定义在 `packages/harness-adapter/src/text-session.ts`。`{ accepted: true }` 表示提交已由 Session 接手，正常路径在 Harness 确认接受或入队时结算，不等待实际执行。取消与受理并发时仍须结算生命周期，不把受理回执当作模型已执行的证据，也不以未收下的结果触发自动重发。返回失败即表示 Harness **没有收下**这条输入。已经写入但丢失回执不能作为未收下处理；Broker 对无法确认结果的请求抛错，不转换成触发停止后重发的拒绝结果。没有原生插入的 Adapter 用 `unsupportedSteer()` 拒绝。
 - `ExternalTurnSteering`（`packages/host-runtime/src/external-turn-steering.ts`）对两种送达方式统一校验非空文本、`expectedTurnId` 和 `threadId + clientUserMessageId` 去重，并按以下顺序决定送达方式：
   1. `turn/steer` 带有 `codexhostSteerDelivery`（Renderer 已经按该方式展示）时照它执行：`newTurn` 停止后重发；`activeTurn` 原生插入，Harness 没收下时报错、不改走退路，避免和 Desktop 已有的展示不一致。
   2. 输入是 Harness 命令（Session 提供命令、文本以 `/命令` 开头）时停止后重发，命令照常解析和执行。
@@ -20,11 +20,31 @@ codexhost 对外部 Harness Thread 保留一个「调整方向」操作，按当
 - `turn/steer` 回执包含 `turnId` 和 `delivery`：`activeTurn` 表示送入当前 Turn，`newTurn` 表示停止旧 Turn 后开始了新 Turn。
 - `codexhost/thread/steering/inspect { threadId, text? }` 按同样的规则（第 2、3 步）预先给出送达方式；读取失败返回 `-32081`。
 
-原生同轮插入成功后，Host 在当前 Turn 发布 `userMessage` Item。Desktop 提交带 `clientUserMessageId` 时，投影把它写入 Item 的 `clientId`，用于结算 Desktop 的乐观 steer 消息；Adapter 不发布这条 Host Item。Host 会让并发的 Turn 终态投影等待这条已接受输入完成实时投影，避免 Harness 接受输入后立刻结束时遗漏乐观消息结算。刷新后的历史仍完全按 Adapter 的原生历史解析，不把不同的原生 Turn 强行合并。
+原有原生同轮插入在 Harness 接受后由 Host 发布当前 Turn 的 `userMessage` Item。Desktop 提交带 `clientUserMessageId` 时，投影把它写入 Item 的 `clientId`，用于结算原生乐观 steer 消息。Adapter 不直接构造这条 Host Item。
+
+新增生成期输入可使用公共延迟投影生命周期：Session 声明 `steerLifecycle`，Host 在执行前用独立的 `steerId` 登记原输入、目标 Turn 和 Desktop client ID；接受结果可返回 `{ accepted: true, projection: "deferred" }`。Broker 必须保留该声明、命令身份、结果和 `turn.steer.started/cancelled` 事件，不按 Harness ID 猜测。
+
+- `turn.steer.started { turnId, steerId }` 确认登记的输入已开始。登记仍有效且未取消时，Host 在原 Turn 发布用户项的 started/completed，并绑定原 client ID。先登记再执行，避免 started 比接受应答先到时丢失投影。
+- `turn.steer.cancelled` 清理登记。停止期间迟到的 native started 触发停止保护，不为取消输入制造 canonical 用户项；Thread/Turn 已切换或登记已失效的事件不应用到另一轮。
+- 工具期与不使用延迟生命周期的 Adapter 保持接受后投影。已有投影屏障仍保护并发终态；取消、会话故障和 Turn 清理也须释放登记，不能无限等待一个不会到来的 started。
+
+生成期有已接受未 started 的引导时，Adapter 保持同一个 Host Turn，前一原生段结束不会投成 Desktop 的 interrupted 或完成后另起自主 Turn。真正的后台自主续段（包括 #495、#615）不被借来承载这条引导，其原有行为不变。空闲输入仍是普通 start。
+
+实时同轮展示不改写 Native Session 历史；重新读取仍按 Adapter 的原生解析，可能恢复真实分段，不把 Fork/Rollback 身份强行合并。
+
+### 生成期开始前取消与原生接管
+
+个人新增的生成期窗口在开始前恢复候选1：尚未被 SDK 的 next() 取走时撤回并结算生命周期；已交出时先经过锁定 SDK 0.3.273 的写入屏障，再发 `interrupt({ cancelQueued: true })`。因此它同时要求消息生命周期和队列取消两项能力。撤回不应返回触发自动另开一轮的 NotTaken。缺少能力时不开放个人生成期窗口，保持官方原路线。
+
+原生接管后的中断仍只有官方 #690（c72b32db / f1d8cd90）入口，生成期和工具期共用，不恢复个人 lastguard 或 force 机制：只要还有已写出、未接管输入，不论原 Host Turn 是否 held，都保留 owner；Root result 不提前完成原轮。guide started 后立即中断，无回答、新工具、自主轮或取消后的 canonical 执行确认；全部输入、后台任务和段终态结算并经过安静期后，原轮只完成一次 cancelled。
+
+f1d8cd90 在中断前建立相应 idle accumulator 并记录取消，涵盖 Root result 后首个 idle 帧就是 started 的次序。aborted_tools / aborted_streaming 按已请求取消处理，无法证明中断的其它失败不伪装为成功取消。没有待接管输入及后台/续态工作的普通停止仍走官方路径。
+
+生成期输入仍在 codexhost 或 CLI 队列时（立即或未接管的 queued 停止）不得开始；held 交接时 CLI 可能已经取走引导，允许短暂 started 但必须由唯一官方入口立即中断。工具期继续按 #690。每个停止用例后，同一临时会话再依次发两条不同标记的新消息，分别记录回答是否命中自己、旧 guide 或另一新消息的标记及长度，不保存正文。立即停止的两条都必须只对应自己；held/工具期只有第一条不对应而第二条恢复时记为已知限制，第二条仍不对应则停止。旧11b失败记录保留，不由新分类追溯改判。完整边界见 [Claude Code 同轮插入](../harnesses/claude-code/claude-code-steer.md)。
 
 ### 后续 Adapter 接入
 
-已有原生同轮插入能力的 Harness，只需在自己的 Adapter 中声明能力、处理 `turn.steer`、保证写入前校验与失败语义，并适配本 Harness 的原生历史读取。Host、Broker 和 Renderer 不按 Harness ID 增加分支。公共输入目前仅支持文本；非同轮的排队原语不能声明为此能力。真实原生执行、取消和历史行为仍需由各 Adapter 验证。
+已有原生同轮插入能力的 Harness，只需在自己的 Adapter 中声明能力、处理 `turn.steer`、保证写入前校验与失败语义，并适配本 Harness 的原生历史读取。Host、Broker 和 Renderer 不按 Harness ID 增加分支。公共 Harness 输入保持文本；图片由共用附件规范化提供原生文件引用，不增加二进制输入约定。非同轮的排队原语不能声明为此能力。真实原生执行、取消和历史行为仍需由各 Adapter 验证。
 
 ### Fork 与撤销窗口
 
@@ -51,6 +71,8 @@ codexhost 对外部 Harness Thread 保留一个「调整方向」操作，按当
 
 ## Renderer 接入
 
+### 直接持有 Manager 的旧路径
+
 只在 Host 实现 cancel/start 不足以接入官方界面：官方 steer 会把乐观消息放在旧 Turn，旧轮 interrupted 时又可能将它恢复到暂停队列。
 
 `renderer-external-steering.ts` 在已确认的 RequestManager 上包装 `steerTurn`。Desktop Manager 同时是 `RpcTarget`，跨组件 RPC 禁止访问实例自身属性（即使该属性是函数）。因此对原型方法的包装放在该实例专属的原型层上，不用 `manager.sendRequest = ...` 创建实例属性，也不修改共享类原型。卸载时移除覆盖并恢复原型查找，不能仅赋回原函数；否则模型和权限列表仍会被 RPC 拒绝。
@@ -63,11 +85,17 @@ codexhost 对外部 Harness Thread 保留一个「调整方向」操作，按当
 4. 成功后解除本次旧轮 interrupted 引入的队列暂停，保留此前已暂停的消息。失败不自动重试或偷偷排队；Desktop 原有失败提交展示负责保留输入。
 5. 绑定卸载时停止新的替换，恢复包装过的方法；尚未发出的替换不能因卸载而意外成为普通 start。
 
-Host 和 Renderer 接入必须配套发布；仅升级 Host、让旧 Renderer 仍创建旧轮乐观 steer 消息，不属于经过接入的产品路径。
+这套停止后重发的展示包装要求 Renderer 能直接访问 Manager。不能从整体“注入成功”推断这几个私有方法都存在或包装已生效。
 
 ### 当前兼容边界
 
-接入点依据 Codex Desktop **26.901.51231 / build 8109** 的 `app-initial-cadb12d4a15e.js`：`steerTurn`、`startTurn`、`sendRequest`、`getTurnCoordinator()` 的 submissionHost，以及队列的 `loadMessages` / `readMessages` / `mutate`。这些是版本相关的 Desktop JavaScript 绑定，不是 Harness SDK 契约。更新 Desktop 后需重新核实。
+第三版曾核查 **26.1027.51404 / build 23880** 的 AppServerManager 在主进程。`renderer-host-rpc-routing.ts` 提供冻结的 main-process RPC facade，只有 Host 请求与通知等能力，没有 `steerTurn/startTurn/getTurnCoordinator`；旧 `renderer-external-steering.ts` 安装器因此返回 null，不能执行上述展示替换和队列暂停恢复。这个 RPC 路由的创建 Model 改写不等于 steer 包装已经安装。
+
+v0.17.0 的 #663 补全了主进程 RPC 连接与外部草稿选路：先登记草稿选择再调用原生 setter，写入失败时恢复草稿实际携带的选择；注册过的外部草稿即使创建请求未带 Model，也会写入对应 carrier。它没有向冻结 facade 增加上述旧 Manager 私有方法，不能把连接/草稿修复说成旧 steer 包装已安装。
+
+生成期修复不依赖该旧 hook：Host/Broker/Adapter 决定实时能力及同轮生命周期，Desktop 使用原生 steer；同一目标 Turn 与同一 client ID 的 canonical 用户项负责结算。未声明新生成期能力的旧 CLI 仍走既有 newTurn，官方 Codex、空闲输入和后台自主续段也不因此改路。工具期的停止收口按上游 #690 独立修复。
+
+旧 Renderer 路径的接入点依据 Codex Desktop **26.901.51231 / build 8109** 的 `app-initial-cadb12d4a15e.js`：`steerTurn`、`startTurn`、`sendRequest`、`getTurnCoordinator()` 的 submissionHost，以及队列的 `loadMessages` / `readMessages` / `mutate`。这些是版本相关的 Desktop JavaScript 绑定，不是 Harness SDK 契约。更新 Desktop 后需重新核实。
 
 - 公共 Harness 输入保持文本。`turn/start` 与 `turn/steer` 共用附件规范化：保留 Desktop 的原生图片清单；`localImage` 缺少清单时，按明确的绝对路径补入，不读取或上传文件。内嵌 `image` 必须已有足量的原生文件路径引用；混合输入先逐项扣除 `localImage` 引用，剩余引用数至少覆盖内嵌图片数。远程补存保留的额外旧引用不会导致拒绝。Host 不推测缺失图片的对应关系，也不把 base64 当作提示词；数量覆盖不等于校验文件内容与内嵌图片一致。
 - 空输入、无有效路径的图片、未知输入类型，以及直接附图的 Harness 命令，在能力查询或停止旧轮前拒绝。命令与图片应分别提交；命令识别也检查原生附件清单 `## My request:` 后的用户请求，不因清单前缀而把 `/compact` 等命令当作普通提示词。原始输入仍参与重试去重，不能将不同图片视为同一条消息。
@@ -76,11 +104,23 @@ Host 和 Renderer 接入必须配套发布；仅升级 Host、让旧 Renderer �
 - 停止后重发时，旧轮和新轮在 Native Session 历史中是两个真实 Turn，不复用旧 ID、不伪造同轮注入，不合并 Fork/Rollback 身份。
 - 原生同轮插入的乐观消息结算依据 Codex Desktop **26.915.31945 / build 9922** 的只读 Bundle 核查：`clientId` 等于 `clientUserMessageId` 的 `userMessage` 会结算待定 `steeringUserMessage`。
 
+### 主动停止后的原生展示
+
+26.1027.51404 / build 23880 的原生函数隔离回放复用了实际 Host 取消帧。两份帧的 steer ACK 都先于 interrupted 终态；ACK Promise 回调是否已经结算，仍会产生两种状态：
+
+| 停止时序 | guide 状态 | 用户操作与边界 |
+| --- | --- | --- |
+| ACK 回调已结算，再处理 interrupted；无 canonical | guide 已离开本地队列，旧轮保留 accepted 乐观原文，无 serverUserMessageId。 | 没有 guide 队列条目可删除，用户可重新输入；原 guide 不自动续发，显式恢复只处理后续 next。 |
+| ACK 已到但回调尚未结算，先处理 interrupted；无 canonical | guide 可能残留 sending + 中断暂停原因，正文被本地队列门控隐藏。 | 本地条目可删除，用户可重新输入；仍无接受凭据时，显式恢复可能成为 outcome-unknown 红色重试，原 guide 不自动重发。 |
+| 已有 canonical 接受凭据，随后普通停止 | 原文及身份保留，停止仍可暂停后面的消息。 | 原生恢复可依据接受凭据清理旧提交，不能与无 canonical 的取消输入混写。 |
+
+前两行是相同 wire 顺序的调度控制，不是对现用窗口线程时序的实测归因。accepted 只表示 UI 乐观受理，不证明模型执行；Host 的 `turn.steer.cancelled` 也只是内部投影登记清理，不是 Desktop 专用取消卡。被官方接管取消流程中断的输入，不因此获得 canonical 确认。不为消除红色状态制造 canonical、恢复已取消输入或清掉无关暂停；不承诺每条取消输入都留在可删除的队列中。
+
 ## 跟进消息队列
 
 Codex Desktop **26.903.61454 / build 8378** 在功能开关及 app-server 版本满足条件时使用服务端队列。运行中追加消息会先调用 `thread/queue/list`，再调用 `thread/queue/add`；仅让 Host 返回空列表不能恢复入队。外部 Thread 不属于官方 app-server，队列请求不能透传给官方。
 
-Manager 位于主进程的 Desktop **26.1027** 使用 Host 实现的真实服务端队列，见[外部 Thread 跟进消息队列](external-thread-queue.md)。以下本地队列补丁仅用于 Renderer 仍持有 Manager 的路径。
+Manager 位于主进程的 Desktop **26.1027** 可以接入 Host 实现的服务端队列，见[外部 Thread 跟进消息队列](external-thread-queue.md)，但 Desktop 的本地 submission/queued-follow-ups 层仍在。`thread/queue/list` 为空不表示本地没有待定输入；没有 queue/add 的输入可能尚停在本地准入阶段。以下本地队列补丁仅用于 Renderer 仍持有 Manager 的路径，不能声称它已装到当前冻结的 RPC facade。
 
 `renderer-external-queue.ts` 在 Renderer Manager 的 `getTurnCoordinator().serverQueue.isEnabled(threadId)` 上排除外部 Thread，让 Desktop 继续使用保留的本地队列：
 
@@ -93,7 +133,11 @@ Manager 位于主进程的 Desktop **26.1027** 使用 Host 实现的真实服务
 
 ### 手动压缩后的自动执行
 
-Codex Desktop **26.924.22138 / build 11645** 的本地队列在 `turnCompleted` 后自动执行下一条消息前，要求最近一个已完成 Turn 含有 `agentMessage`，或含有 `source: "manual"` 的 `contextCompaction`。这个 `source` 不取自 Item 字段：`item/started` 时，Desktop 用自身 `compactThread`（官方 `thread/compact/start`）之前调用的 `registerPendingManualContextCompaction(threadId)` 登记来判定，未登记即为 `"automatic"`。外部 Harness 的 `/compact` 经 `codexhost/thread/command/execute` 或 `turn/start` 进入 Host 命令 Turn，不经过该登记，而各 Adapter 的压缩 Turn 通常没有 Agent Message，因此压缩期间排队的消息不会自动执行（[#414](https://github.com/BytePioneer-AI/codex-host/issues/414)）。
+26.1027.51404 的原生本地队列仍会阻挡带 pausedReason、follower、inProgress 等状态；completed 若没有 agentMessage 或 manual contextCompaction 也不能自动发下一条。interrupted 状态本身不是直接阻挡条件，但 turnCompleted(interrupted) 会给本地条目加中断暂停原因。后来完成另一轮不会自动清掉这个原因；只有既定的恢复/用户操作可以改变它。
+
+当前 Main RPC facade 也缺少 `registerPendingManualContextCompaction/getConversation`，所以 `renderer-manual-compaction.ts` 的旧登记安装器返回 null。Claude `/compact` 存在只产生 contextCompaction、没有 agentMessage 的完成路径；若原生没有登记为 manual，该路径会被本地队列阻挡。本次只评估这个既有风险，不修改压缩、登记或 UI，也不声称所有真实压缩都会卡住。下列登记实现描述适用于能访问对应 Manager 的路径。
+
+Codex Desktop **26.924.22138 / build 11645** 的本地队列在 `turnCompleted` 后自动执行下一条消息前，要求最近一个已完成 Turn 含有 `agentMessage`，或含有 `source: "manual"` 的 `contextCompaction`。这个 `source` 不取自 Item 字段：`item/started` 时，Desktop 用自身 `compactThread`（官方 `thread/compact/start`）之前调用的 `registerPendingManualContextCompaction(threadId)` 登记来判定，未登记即为 `"automatic"`。外部 Harness 的 `/compact` 经 `codexhost/thread/command/execute` 或 `turn/start` 进入 Host 命令 Turn，不经过该登记，若压缩 Turn 没有 Agent Message，则该分支的排队消息不能自动执行（[#414](https://github.com/BytePioneer-AI/codex-host/issues/414)）。
 
 - Host 按命令目录中的 `invocation: "/compact"` 记录显式手动压缩 Turn，在其 `contextCompaction` 的 `item/started` 之前写出 `codexhost/thread/manual-compaction/started { threadId, turnId }`。其他命令 Turn 与普通 Turn 中的自动压缩均不发送该通知；记录在命令失败或 Turn 完成时清除。
 - Desktop Renderer 只把方法在其内置 app-server 通知表中的通知交给 Manager（以及 `addNotificationCallback`），`codexhost/*` 方法在这一步被丢弃；Electron 主进程则会把所有 Host 通知原样以 `{ type: "mcp-notification", hostId, method, params }` 投递到窗口 `message` 事件。因此 `renderer-manual-compaction.ts` 按 Host 连接（本机及 SSH）监听窗口 `message`，只接受本窗口（或无 source）的、`hostId` 与该连接一致的通知。仅对已加载、`modelProvider: "codexhost"` 的外部 Thread，且当前窗口不是 follower 时，调用该 Manager 的 `registerPendingManualContextCompaction(threadId)`。窗口消息按到达顺序逐条分发，该登记在紧接着的 `item/started` 被处理前完成并随即被消费；Item 属于同一个进行中的 Turn，登记产生的占位 Item 会被替换。
@@ -104,6 +148,7 @@ Codex Desktop **26.924.22138 / build 11645** 的本地队列在 `turnCompleted` 
 
 针对性测试：
 
+个人生成期回归覆盖双能力门控与官方退路、原生段结束后的同 Host Turn 保活、deferred started/cancelled 与同 client ID 投影、开始前撤回/写入顺序、唯一官方接管取消及 ACK 竞态显示。第三版与11b已有回放须在新候选上重跑，不能直接作为第四版验收。真实 SDK 还须按立即、held、工具三个停止场景核对无工具/回答/自主轮及单次 cancelled，并按上述两条新消息规则检查内容对应；只记录标记布尔与长度。回放不替代这些检查，也不代替全量检查。
 - `tests/integration/external-image-steering.test.ts`：将 Renderer steer／停止后重发、远程补存器和真实 AppServerHost RPC 串联，覆盖纯图片送达、附件展示上下文、部分清单补存后的额外引用、清单中的命令及缺少路径时停止前拒绝。Desktop 展示与原生文件存储使用合成对象，Harness 使用 Fake Session，不代表实机验收。
 
 - `packages/host-runtime/test/app-server-host.broker-steering.test.ts`：非 Claude 的合成 Adapter 经真实 Broker socket 与 Host RPC，验证打开后能力变化、同轮消息投影，以及不支持时停止后重发；不代表该 Harness 的原生 steer 已接入。

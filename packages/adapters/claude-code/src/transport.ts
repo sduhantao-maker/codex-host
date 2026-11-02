@@ -291,11 +291,16 @@ export interface ClaudeTurnTransport {
   supportsNativeSteer?(): boolean;
   /**
    * True while a requested Turn has a root tool call running on a CLI that confirms steers, or
+   * the requested Turn is generating text, or
    * while a held Turn's continuation is idle-live waiting on background work. A steer written
    * in the first case joins this Turn after that tool call; in the second it runs as the held
    * Turn's next Segment without stopping the work it waits on.
    */
   canSteerActiveTurn?(): boolean;
+  /** A generation input runs as this Host Turn's next native Segment. */
+  isGenerationSteer?(): boolean;
+  /** Pending new-generation input eligible for pre-start withdrawal/cancellation. */
+  hasPendingGenerationSteers?(): boolean;
   getPermissionMode(): ClaudePermissionMode;
   setModel(model?: string): Promise<void>;
   setThinkingOption(thinkingOptionId: HarnessThinkingOptionId): Promise<void>;
@@ -332,10 +337,14 @@ export interface ClaudeTurnTransport {
    * cannot be written, or the transport closes or faults before acceptance.
    *
    * `onTakeover` runs once for a written message: `true` when Claude drains it into a native turn
-   * (`command_lifecycle` `started`), `false` when it ends without one, the `queued` receipt never
-   * arrives, or the transport closes or faults first.
+   * (`command_lifecycle` `started`), `false` when it ends without one or the transport stops.
+   * Legacy tool/held steers also release on missing `queued`; generation steers retain ownership.
    */
-  steer(text: string, messageId: string, onTakeover?: (started: boolean) => void): Promise<void>;
+  steer(
+    text: string,
+    messageId: string,
+    onTakeover?: (started: boolean, reason?: "cancelled" | "discarded" | "refused") => void,
+  ): Promise<void>;
   respondToInteraction(response: ClaudeInteractionResponse): Promise<void>;
   /** Interrupts the running requested or autonomous Turn; its Terminal still follows. */
   abort(): Promise<void>;

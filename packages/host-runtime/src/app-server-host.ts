@@ -91,6 +91,7 @@ import type {
 import {
   parseHarnessAccountCredits,
   type HostEvent,
+  type HostUserMessageItem,
   type HostUsage,
 } from "@codexhost/harness-adapter";
 import type {
@@ -681,6 +682,15 @@ export class AppServerHost {
   readonly #observedSessionUsage: ObservedSessionUsage;
   #repository: ExternalThreadRepository;
   #pendingDesktopApprovals = new Map<HostApprovalRequestId, PendingDesktopApproval>();
+  readonly #steerProjections = new Map<
+    HostItemId,
+    {
+      thread: ExternalThread;
+      turnId: HostTurnId;
+      item: HostUserMessageItem;
+      clientUserMessageId?: string;
+    }
+  >();
   #pendingDesktopQuestions = new Map<HostQuestionRequestId, PendingDesktopQuestion>();
   #nextApprovalRequestId = HOST_APPROVAL_REQUEST_ID_MAX;
   #nextQuestionRequestId = HOST_QUESTION_REQUEST_ID_MAX;
@@ -906,6 +916,7 @@ export class AppServerHost {
   close(): void {
     if (this.#closeRequested) return;
     this.#closeRequested = true;
+    this.#steerProjections.clear();
     this.#options.sharedThreads?.close();
     this.#externalRuntime.idleRelease.disable();
     this.#pluginLoadAbort.abort();
@@ -4989,6 +5000,19 @@ export class AppServerHost {
   }
 
   async #steerExternalTurn(request: JsonRpcRequest, thread: ExternalThread): Promise<void> {
+    const params = isRecord(request.params) ? request.params : {};
+    this.#traceClaudeSteering(thread, "steer.received", {
+      turnId: typeof params.expectedTurnId === "string" ? params.expectedTurnId : undefined,
+      clientUserMessageId:
+        typeof params.clientUserMessageId === "string" ? params.clientUserMessageId : undefined,
+      length: Array.isArray(params.input)
+        ? params.input.reduce<number>(
+            (sum, item) =>
+              sum + (isRecord(item) && typeof item.text === "string" ? item.text.length : 0),
+            0,
+          )
+        : 0,
+    });
     try {
       const started = await this.#externalSteering.run(
         thread,
@@ -5005,6 +5029,12 @@ export class AppServerHost {
           ),
         (input) => this.#insertExternalInput(thread, input),
       );
+      this.#traceClaudeSteering(thread, "steer.accepted", {
+        turnId: started.turnId,
+        clientUserMessageId:
+          typeof params.clientUserMessageId === "string" ? params.clientUserMessageId : undefined,
+        delivery: started.delivery,
+      });
       try {
         await this.#writer.json(
           rpcEnvelope(request, {
@@ -5015,6 +5045,7 @@ export class AppServerHost {
         started.gate.resolve();
       }
     } catch (error) {
+      this.#traceClaudeSteering(thread, "steer.failed", { reason: "request-failed" });
       await this.#writer.json(
         rpcError(
           request,
@@ -5035,30 +5066,63 @@ export class AppServerHost {
     input: { turnId: HostTurnId; text: string; clientUserMessageId?: string },
   ): Promise<{ turnId: HostTurnId; gate: TurnProjectionGate }> {
     await insertNativeSteer(thread, input, {
-      project: async (turnId, item, clientUserMessageId) => {
-        const projection = this.#projectedTurn(thread, turnId);
-        if (clientUserMessageId) {
-          projection.projector.bindUserMessageClientId(item.itemId, clientUserMessageId);
-        }
-        await this.#projectHarnessOutput(thread, {
-          kind: "event",
-          event: { type: "item.started", turnId, item },
-        });
-        await this.#projectHarnessOutput(thread, {
-          kind: "event",
-          event: {
-            type: "item.completed",
-            turnId,
-            snapshot: { item, outcome: { status: "succeeded" } },
-          },
-        });
-      },
+      project: (turnId, item, clientUserMessageId) =>
+        this.#projectSteeredUserMessage(thread, turnId, item, clientUserMessageId),
       diagnose: (error) => this.#diagnose(error),
+      reserveProjection: (turnId, item, clientUserMessageId) => {
+        this.#steerProjections.set(item.itemId, {
+          thread,
+          turnId,
+          item,
+          ...(clientUserMessageId ? { clientUserMessageId } : {}),
+        });
+        return () => this.#steerProjections.delete(item.itemId);
+      },
     });
     return {
       turnId: input.turnId,
       gate: { promise: Promise.resolve(), resolve: () => undefined },
     };
+  }
+
+  async #projectSteeredUserMessage(
+    thread: ExternalThread,
+    turnId: HostTurnId,
+    item: HostUserMessageItem,
+    clientUserMessageId?: string,
+  ): Promise<void> {
+    const projection = this.#projectedTurn(thread, turnId);
+    if (clientUserMessageId)
+      projection.projector.bindUserMessageClientId(item.itemId, clientUserMessageId);
+    let failure: unknown;
+    try {
+      await this.#projectHarnessOutput(thread, {
+        kind: "event",
+        event: { type: "item.started", turnId, item },
+      });
+    } catch (error) {
+      failure = error;
+    }
+    // A notification write failure must not leave an open Item and fail accepted native work.
+    try {
+      await this.#projectHarnessOutput(thread, {
+        kind: "event",
+        event: {
+          type: "item.completed",
+          turnId,
+          snapshot: { item, outcome: { status: "succeeded" } },
+        },
+      });
+    } catch (error) {
+      failure ??= error;
+    }
+    if (failure) throw failure;
+    this.#traceClaudeSteering(thread, "steer.merged", {
+      turnId,
+      steerId: item.itemId,
+      clientUserMessageId,
+      length: item.input.reduce((sum, part) => sum + part.text.length, 0),
+    });
   }
 
   /** Keep command restoration and dispatch identical for start and steer submissions. */
@@ -5317,6 +5381,37 @@ export class AppServerHost {
       return;
     }
     let event = output.event;
+    if (event.type === "turn.steer.started" || event.type === "turn.steer.cancelled") {
+      const pending = this.#steerProjections.get(event.steerId);
+      if (!pending || pending.thread !== thread || pending.turnId !== event.turnId) return;
+      this.#steerProjections.delete(event.steerId);
+      if (event.type === "turn.steer.cancelled") {
+        this.#traceClaudeSteering(thread, "steer.cancelled", {
+          turnId: event.turnId,
+          steerId: event.steerId,
+          clientUserMessageId: pending.clientUserMessageId,
+          length: pending.item.input.reduce((sum, part) => sum + part.text.length, 0),
+          reason: event.reason,
+        });
+      } else if (thread.running && thread.activeTurnId === event.turnId) {
+        try {
+          await this.#projectSteeredUserMessage(
+            thread,
+            pending.turnId,
+            pending.item,
+            pending.clientUserMessageId,
+          );
+        } catch {
+          this.#traceClaudeSteering(thread, "steer.failed", {
+            turnId: event.turnId,
+            steerId: event.steerId,
+            clientUserMessageId: pending.clientUserMessageId,
+            reason: "projection-failed",
+          });
+        }
+      }
+      return;
+    }
     if (this.#meterTurnTiming(thread, event)) await this.#notifyThreadUsage(thread);
     if (event.type === "item.started" && event.item.type === "subagentDelegation") {
       event = {
@@ -5477,6 +5572,10 @@ export class AppServerHost {
     }
 
     if (event.type === "turn.autonomous.started") {
+      this.#traceClaudeSteering(thread, "autonomous.started", {
+        turnId: event.turnId,
+        reason: "native-unowned-output",
+      });
       if (thread.running || thread.activeTurnId) {
         throw new Error("External autonomous Turn started while another Turn is active");
       }
@@ -5557,6 +5656,20 @@ export class AppServerHost {
     }
     if (event.type === "turn.completed") {
       if (!result.completedTurn) throw new Error("Turn projector returned no completed Turn");
+      this.#traceClaudeSteering(thread, "turn.ended", {
+        turnId: event.turnId,
+        reason: event.outcome.status,
+      });
+      for (const [steerId, pending] of this.#steerProjections) {
+        if (pending.thread !== thread || pending.turnId !== event.turnId) continue;
+        this.#steerProjections.delete(steerId);
+        this.#traceClaudeSteering(thread, "steer.cancelled", {
+          turnId: event.turnId,
+          steerId,
+          clientUserMessageId: pending.clientUserMessageId,
+          reason: "turn-ended-before-start",
+        });
+      }
       const completedAt = Math.floor(Date.now() / 1000);
       if (ephemeralTurn) {
         thread.ephemeralTurnIds.delete(event.turnId);
@@ -6286,6 +6399,58 @@ export class AppServerHost {
       void task.catch((error) => this.#diagnose(error));
     } catch (error) {
       this.#diagnose(error);
+    }
+  }
+
+  #traceClaudeSteering(
+    thread: ExternalThread,
+    event:
+      | "steer.received"
+      | "steer.accepted"
+      | "steer.merged"
+      | "steer.cancelled"
+      | "steer.failed"
+      | "turn.ended"
+      | "autonomous.started",
+    fields: {
+      turnId?: string | undefined;
+      clientUserMessageId?: string | undefined;
+      steerId?: string | undefined;
+      length?: number;
+      delivery?: "activeTurn" | "newTurn";
+      reason?:
+        | "cancelled"
+        | "discarded"
+        | "refused"
+        | "succeeded"
+        | "failed"
+        | "request-failed"
+        | "projection-failed"
+        | "turn-ended-before-start"
+        | "native-unowned-output";
+    } = {},
+  ): void {
+    if (thread.harnessId !== "claude-code") return;
+    const id = (value: string | undefined) =>
+      value && /^[A-Za-z0-9_.:-]{1,200}$/.test(value) ? value : undefined;
+    try {
+      this.#options.diagnosticOutput.write(
+        `codexhost Host Runtime: ${JSON.stringify({
+          component: "claude-steering",
+          event,
+          at: Date.now(),
+          threadId: thread.id,
+          nativeSessionId: id(thread.record.nativeSessionRef?.nativeSessionId),
+          turnId: id(fields.turnId),
+          steerId: id(fields.steerId),
+          clientUserMessageId: id(fields.clientUserMessageId),
+          length: fields.length,
+          delivery: fields.delivery,
+          reason: fields.reason,
+        })}\n`,
+      );
+    } catch {
+      // Diagnostics must not change delivery or invite duplicate input.
     }
   }
 

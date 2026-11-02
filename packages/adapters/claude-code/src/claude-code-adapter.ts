@@ -574,6 +574,7 @@ export function projectClaudePlanLimitToCredits(
 
 class ClaudeHarnessSession implements HarnessSession {
   readonly harnessId: HarnessId = claudeCodeHarnessId;
+  readonly steerLifecycle = true;
   readonly capabilities: HarnessSessionCapabilities = ((session) => ({
     configuration: {
       selectModel: true,
@@ -584,7 +585,8 @@ class ClaudeHarnessSession implements HarnessSession {
     history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
     subagents: { observe: true, readTranscript: true },
     // Read live: native delivery joins this Turn while a root tool call runs, or while a held
-    // Turn's continuation waits on background work, on a CLI that confirms steers
+    // Turn's continuation waits on background work, or text generation can cancel queued input,
+    // on a CLI that confirms steers
     // (`msg_lifecycle_v1`). A Turn whose cancellation is in flight must not take more input;
     // every other case stops and restarts.
     get steer(): boolean {
@@ -1056,14 +1058,29 @@ class ClaudeHarnessSession implements HarnessSession {
         },
       };
     }
-    // The write happens synchronously inside steer(); claim the keep-open before it, so neither
-    // the Root result nor continuation quiescence finishes the Turn before Claude drains the steer.
+    // Reserve this input's Host Turn ownership before the SDK takes it.
     const messageId = this.#randomUUID();
+    const deferred = command.steerId !== undefined && transport.isGenerationSteer?.() === true;
     active.steersAwaitingNative.add(messageId);
     try {
-      await transport.steer(text, messageId, (started) =>
-        this.#takeOverSteer(active, messageId, started),
-      );
+      await transport.steer(text, messageId, (started, reason) => {
+        if (deferred && command.steerId && this.#active === active) {
+          if (started && !active.cancellationRequested)
+            this.#event({
+              type: "turn.steer.started",
+              turnId: command.turnId,
+              steerId: command.steerId,
+            });
+          else if (reason || (started && active.cancellationRequested))
+            this.#event({
+              type: "turn.steer.cancelled",
+              turnId: command.turnId,
+              steerId: command.steerId,
+              reason: reason ?? "cancelled",
+            });
+        }
+        this.#takeOverSteer(active, messageId, started);
+      });
     } catch (error) {
       if (error instanceof ClaudeSteerMissedTurnError) {
         // Nothing was written, or the Session died after writing and the Turn ends anyway.
@@ -1072,7 +1089,10 @@ class ClaudeHarnessSession implements HarnessSession {
       }
       throw error;
     }
-    return { ok: true, value: { accepted: true } };
+    return {
+      ok: true,
+      value: { accepted: true, ...(deferred ? { projection: "deferred" as const } : {}) },
+    };
   }
 
   /** Built-ins plus the live commands and skills of the started native Session. */
@@ -1655,7 +1675,11 @@ class ClaudeHarnessSession implements HarnessSession {
       await Promise.race([
         Promise.all([
           taskIds.length > 0 ? transport.stopTasks(taskIds) : undefined,
-          active.rootSegmentActive ? this.#interruptCancelledSegment(active) : undefined,
+          active.rootSegmentActive
+            ? this.#interruptCancelledSegment(active)
+            : transport.hasPendingGenerationSteers?.()
+              ? transport.abortContinuation()
+              : undefined,
         ]),
         timeout.promise,
       ]);

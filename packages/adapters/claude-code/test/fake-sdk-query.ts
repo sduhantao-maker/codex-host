@@ -1,5 +1,5 @@
 import { vi } from "vitest";
-import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { Query, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 
 /** Scripted Claude Agent SDK Query: tests push native messages in the order Claude emits them. */
 export class FakeQuery {
@@ -14,7 +14,12 @@ export class FakeQuery {
       },
     ],
   }));
-  readonly interrupt = vi.fn(async () => undefined);
+  readonly interrupt = vi.fn(
+    async (options?: { cancelQueued?: true }): Promise<Awaited<ReturnType<Query["interrupt"]>>> => {
+      void options;
+      return undefined;
+    },
+  );
   readonly stopTask = vi.fn(async (taskId: string) => {
     this.push({
       type: "system",
