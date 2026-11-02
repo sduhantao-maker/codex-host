@@ -268,6 +268,11 @@ export class ModernSessionImportAdapter extends FakeHarnessAdapter {
 
 export function createFixture(
   options: {
+    sideChatFeatures?: {
+      persistentSideChats?: boolean;
+      sideChatLibrary?: boolean;
+      claudeActiveSideChatFork?: boolean;
+    };
     sharedThreads?: SharedThreadBridge;
     environment?: NodeJS.ProcessEnv;
     pluginDirectory?: string;
@@ -295,6 +300,20 @@ export function createFixture(
     options.externalAdapters?.get("pi") ?? new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
   const mappingStoreDirectory =
     options.mappingStoreDirectory ?? mkdtempSync(path.join(tmpdir(), "codexhost-host-test-"));
+  if (options.sideChatFeatures) {
+    writeFileSync(
+      path.join(
+        options.environment?.CODEXHOST_DATA_DIR ?? mappingStoreDirectory,
+        "sidechat-features.json",
+      ),
+      JSON.stringify({
+        persistentSideChats: false,
+        sideChatLibrary: false,
+        claudeActiveSideChatFork: false,
+        ...options.sideChatFeatures,
+      }),
+    );
+  }
   let pluginDirectory = options.pluginDirectory;
   if (options.codexUsage) {
     pluginDirectory = path.join(mappingStoreDirectory, "plugins");

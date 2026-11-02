@@ -16,6 +16,7 @@ export interface DecodedThreadForkRequest {
   cwd?: string;
   excludeTurns: boolean;
   ephemeral?: boolean;
+  attachToSource?: boolean;
   runtimeWorkspaceRoots?: string[];
   approvalPolicy?: string;
   sandbox?: string;
@@ -61,7 +62,10 @@ function optionalBoolean(params: Record<string, unknown>, name: string): boolean
   return value;
 }
 
-export function decodeThreadForkRequest(request: JsonRpcRequest): DecodedThreadForkRequest | null {
+export function decodeThreadForkRequest(
+  request: JsonRpcRequest,
+  features: { persistentSideChats?: boolean } = {},
+): DecodedThreadForkRequest | null {
   if (request.method !== "thread/fork") return null;
   if (!isRecord(request.params)) throw new Error("thread/fork params must be an object");
   const params = request.params;
@@ -83,6 +87,12 @@ export function decodeThreadForkRequest(request: JsonRpcRequest): DecodedThreadF
   }
   const path = optionalText(params, "path", { allowEmpty: true });
   const ephemeral = optionalBoolean(params, "ephemeral");
+  const attachToSource = features.persistentSideChats
+    ? optionalBoolean(params, "attachToSource")
+    : undefined;
+  if (attachToSource && ephemeral) {
+    throw new Error("thread/fork cannot combine attachToSource with ephemeral");
+  }
   return {
     threadId,
     ...(lastTurnText ? { lastTurnId: hostTurnIdSchema.parse(lastTurnText) } : {}),
@@ -93,6 +103,7 @@ export function decodeThreadForkRequest(request: JsonRpcRequest): DecodedThreadF
     ...optionalField(params, "cwd"),
     excludeTurns: optionalBoolean(params, "excludeTurns") ?? false,
     ...(ephemeral !== undefined ? { ephemeral } : {}),
+    ...(attachToSource !== undefined ? { attachToSource } : {}),
     ...(Array.isArray(runtimeWorkspaceRoots)
       ? { runtimeWorkspaceRoots: runtimeWorkspaceRoots as string[] }
       : {}),

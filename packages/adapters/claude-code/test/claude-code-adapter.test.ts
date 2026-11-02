@@ -419,6 +419,94 @@ function textTurn(id: string) {
   };
 }
 
+describe("Claude running Fork capture", () => {
+  it.each([false, true])(
+    "captures the first durable user boundary without interrupting the parent (delayed=%s)",
+    async (delayed) => {
+      const directory = await mkdtemp(path.join(tmpdir(), "codexhost-active-fork-"));
+      const environment = { CLAUDE_CONFIG_DIR: directory, CODEXHOST_DATA_DIR: directory };
+      const { adapter, dependencies, transports } = fixture({ environment, closeTimeoutMs: 200 });
+      const session = await openSession(adapter, environment);
+      try {
+        await session.execute(textTurn("active-parent"));
+        const transport = transports[0];
+        const sent = transport?.turns[0];
+        if (!transport || !sent || !session.captureActiveForkBoundary)
+          throw new Error("Missing active Claude Session");
+        let reads = 0;
+        vi.mocked(dependencies.readSessionMessages).mockImplementation(async () => {
+          reads += 1;
+          if (delayed && reads < 3) return [];
+          return [
+            {
+              type: "user",
+              uuid: sent.userMessageId,
+              parentUuid: null,
+              session_id: transport.sessionId,
+              message: { role: "user", content: sent.text },
+            },
+          ];
+        });
+        await expect(session.readSnapshot()).resolves.toMatchObject({
+          ok: false,
+          error: { code: "sessionBusy" },
+        });
+        await expect(session.captureActiveForkBoundary()).resolves.toMatchObject({
+          ok: true,
+          value: {
+            turnId: "active-parent",
+            checkpoint: {
+              nativeSessionId: transport.sessionId,
+              checkpointId: sent.userMessageId,
+              locator: { kind: "codexhost.claude-active-sidechat", version: 1 },
+            },
+          },
+        });
+        expect(reads).toBe(delayed ? 3 : 1);
+        expect(transport.abort).not.toHaveBeenCalled();
+        expect(transport.abortContinuation).not.toHaveBeenCalled();
+        expect(transport.close).not.toHaveBeenCalled();
+        expect(transport.turns).toHaveLength(1);
+        expect(dependencies.forkSession).not.toHaveBeenCalled();
+        await expect(session.readSnapshot()).resolves.toMatchObject({
+          ok: false,
+          error: { code: "sessionBusy" },
+        });
+      } finally {
+        await session.close();
+        await adapter.close();
+        await rm(directory, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("bounds the wait for an unpersisted first user entry without creating a Fork", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "codexhost-active-fork-wait-"));
+    const environment = { CLAUDE_CONFIG_DIR: directory, CODEXHOST_DATA_DIR: directory };
+    const { adapter, dependencies, transports } = fixture({ environment, closeTimeoutMs: 50 });
+    const session = await openSession(adapter, environment);
+    try {
+      await session.execute(textTurn("waiting-parent"));
+      const transport = transports[0];
+      if (!transport || !session.captureActiveForkBoundary)
+        throw new Error("Missing active Claude Session");
+      vi.mocked(dependencies.readSessionMessages).mockResolvedValue([]);
+      await expect(session.captureActiveForkBoundary()).resolves.toMatchObject({
+        ok: false,
+        error: { code: "sessionBusy", retryable: true },
+      });
+      expect(vi.mocked(dependencies.readSessionMessages).mock.calls.length).toBeLessThanOrEqual(4);
+      expect(dependencies.forkSession).not.toHaveBeenCalled();
+      expect(transport.abort).not.toHaveBeenCalled();
+      expect(transport.close).not.toHaveBeenCalled();
+    } finally {
+      await session.close();
+      await adapter.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+});
+
 /** Lifecycle assertions skip Host usage metering events, which have their own tests. */
 async function nextOutput(iterator: AsyncIterator<HarnessOutput>) {
   for (;;) {

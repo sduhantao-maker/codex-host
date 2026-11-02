@@ -79,6 +79,8 @@ import {
   type HarnessSessionImportCandidate,
   type HarnessThinkingOptionId,
   type HostInteractionId,
+  type HostTurnId,
+  type NativeCheckpointRef,
   type NativeSessionRef,
   type NativeTurnRef,
 } from "@codexhost/shared-contracts";
@@ -90,6 +92,10 @@ import { SessionImportScope } from "@codexhost/harness-adapter/session-import";
 import { ClaudeCodeExecutableError, resolveClaudeCodeExecutable } from "./command.js";
 import { ClaudePendingSessions, isPendingClaudeSession } from "./pending-session.js";
 import { forkClaudeSession } from "./claude-fork.js";
+import {
+  CLAUDE_ACTIVE_SIDECHAT_CHECKPOINT,
+  selectClaudeActiveForkCheckpoint,
+} from "./claude-fork-boundary.js";
 import { remapForkedSessionReferences } from "./claude-fork-references.js";
 import { mapClaudeSnapshot, mapClaudeSubagentSnapshot } from "./claude-history.js";
 import { claudeTranscriptItemId } from "./item-identity.js";
@@ -752,6 +758,62 @@ class ClaudeHarnessSession implements HarnessSession {
 
   get nativeWriterRef(): NativeSessionRef {
     return this.#nativeRef;
+  }
+
+  async captureActiveForkBoundary(): Promise<
+    HarnessResult<{ turnId: HostTurnId; checkpoint: NativeCheckpointRef }>
+  > {
+    const active = this.#active;
+    const deadline = Date.now() + Math.min(this.#closeTimeoutMs, 2_000);
+    while (active && this.#active === active && this.#phase === "open") {
+      if (active.userMessageId) {
+        try {
+          const messages = await this.#readSessionMessages({
+            cwd: this.#cwd,
+            sessionId: this.#sessionId,
+            includeControlRecords: true,
+          });
+          const checkpointId = selectClaudeActiveForkCheckpoint(
+            messages ?? [],
+            active.userMessageId,
+          );
+          if (checkpointId && this.#active === active && this.#phase === "open")
+            return {
+              ok: true,
+              value: {
+                turnId: active.command.turnId,
+                checkpoint: nativeCheckpointRefSchema.parse({
+                  harnessId: this.harnessId,
+                  nativeSessionId: this.#sessionId,
+                  checkpointId,
+                  formatVersion: 1,
+                  locator: CLAUDE_ACTIVE_SIDECHAT_CHECKPOINT,
+                }),
+              },
+            };
+        } catch {
+          return {
+            ok: false,
+            error: {
+              code: "protocolError",
+              message: "Claude Code active Fork history could not be validated",
+              retryable: true,
+            },
+          };
+        }
+      }
+      if (Date.now() >= deadline) break;
+      await delay(25);
+    }
+    return {
+      ok: false,
+      error: {
+        code: "sessionBusy",
+        message:
+          "Waiting for a durable Claude Code Side Chat boundary; the main Turn is still running",
+        retryable: true,
+      },
+    };
   }
 
   async readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
@@ -3204,11 +3266,12 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
         if (!info) return undefined;
         return info.cwd ? { cwd: info.cwd } : {};
       },
-      readSessionMessages: async ({ cwd, sessionId }) => {
+      readSessionMessages: async ({ cwd, sessionId, includeControlRecords }) => {
         const transcript = await readClaudeTranscript({
           cwd,
           environment: options.environment ?? process.env,
           sessionId,
+          ...(includeControlRecords ? { includeControlRecords } : {}),
         });
         return transcript;
       },

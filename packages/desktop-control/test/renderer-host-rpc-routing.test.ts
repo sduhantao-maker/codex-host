@@ -27,7 +27,9 @@ function setup(
   } = {},
 ) {
   const rpc = {
-    sendRequest: vi.fn(async () => ({ entries: [] })),
+    sendRequest: vi.fn<(method: string, params: unknown) => Promise<unknown>>(async () => ({
+      entries: [],
+    })),
     clearPrewarmedThreads: vi.fn(async () => undefined),
   };
   const connections = new Map(
@@ -97,7 +99,15 @@ function setup(
       sent.push(message);
     }
   }
-  const target: Record<string, unknown> = {};
+  const listeners = new Set<(event: unknown) => void>();
+  const target: Record<string, unknown> = {
+    addEventListener(type: string, listener: (event: unknown) => void) {
+      if (type === "message") listeners.add(listener);
+    },
+    removeEventListener(type: string, listener: (event: unknown) => void) {
+      if (type === "message") listeners.delete(listener);
+    },
+  };
   const renderer = {
     async evaluate<T>(expression: string): Promise<T> {
       return await runInNewContext(expression, {
@@ -116,12 +126,25 @@ function setup(
       });
     },
   };
-  const post = (message: unknown) =>
+  const localPort = new MessagePort();
+  const post = (message: unknown, port = localPort) =>
     (MessagePort.prototype as { postMessage(message: unknown): void }).postMessage.call(
-      new MessagePort(),
+      port,
       message,
     );
-  return { renderer, target, rpc, connections, sent, post, MessagePort };
+  const notify = (params: unknown, hostId = "local") => {
+    for (const listener of listeners)
+      listener({
+        source: target,
+        data: {
+          type: "mcp-notification",
+          hostId,
+          method: "codexhost/sideChat/features/changed",
+          params,
+        },
+      });
+  };
+  return { renderer, target, rpc, connections, sent, post, MessagePort, notify };
 }
 
 function policyOf(route: ReturnType<Routing["forHost"]>) {
@@ -152,6 +175,147 @@ function creation(method: string, model: string, options: Record<string, unknown
     ],
   ];
 }
+
+const enabledSideChats = {
+  settings: { persistentSideChats: true, sideChatLibrary: false, claudeActiveSideChatFork: false },
+  capabilities: {
+    persistentSideChats: true,
+    sideChatLibrary: true,
+    claudeActiveSideChatFork: true,
+  },
+};
+
+function probe(fixture: ReturnType<typeof setup>, result: unknown) {
+  fixture.rpc.sendRequest.mockImplementation(async (method, params) => {
+    if (method === "codexhost/sideChat/features/get") {
+      fixture.post(["push", ["pipeline", -188, ["sendRequest"], [method, params]]]);
+      return result;
+    }
+    return { entries: [] };
+  });
+}
+
+it("makes only verified local user side-chat forks durable without changing their source or callbacks", async () => {
+  const fixture = setup();
+  probe(fixture, enabledSideChats);
+  const routing = await install(fixture);
+  await new Promise(setImmediate);
+  const input = {
+    sourceConversationId: "parent",
+    threadSource: "user",
+    sideConversation: true,
+    sideConversationParentNavigationPath: "/thread/parent",
+    ephemeral: true,
+    afterConversationCreated: ["export", -42],
+    readResumeInputs: ["export", -43],
+  };
+  const call = (method: string, value: unknown) => ["push", ["pipeline", -188, [method], [value]]];
+  try {
+    for (const method of ["forkConversationFromLatest", "forkConversationFromTurn"]) {
+      fixture.post(call(method, input));
+      expect(fixture.sent.at(-1)).toEqual(
+        call(method, { ...input, ephemeral: false, attachToSource: true }),
+      );
+    }
+    for (const value of [
+      { ...input, sideConversation: false },
+      { ...input, threadSource: "agent" },
+      { ...input, sourceConversationId: "" },
+    ]) {
+      const original = call("forkConversationFromLatest", value);
+      fixture.post(original);
+      expect(fixture.sent.at(-1)).toBe(original);
+    }
+    const parentTurn = call("startTurn", { conversationId: "parent", input: "untouched" });
+    fixture.post(parentTurn);
+    expect(fixture.sent.at(-1)).toBe(parentTurn);
+    expect(input.ephemeral).toBe(true);
+  } finally {
+    routing.dispose();
+  }
+});
+
+it.each([
+  undefined,
+  {},
+  { ...enabledSideChats, settings: { ...enabledSideChats.settings, persistentSideChats: false } },
+  {
+    ...enabledSideChats,
+    capabilities: { ...enabledSideChats.capabilities, persistentSideChats: false },
+  },
+])(
+  "keeps the stable fork call unchanged without enabled capability acknowledgement (%j)",
+  async (result) => {
+    const fixture = setup();
+    probe(fixture, result);
+    const routing = await install(fixture);
+    await new Promise(setImmediate);
+    try {
+      const call = [
+        "push",
+        [
+          "pipeline",
+          -188,
+          ["forkConversationFromLatest"],
+          [
+            {
+              sourceConversationId: "parent",
+              sideConversation: true,
+              threadSource: "user",
+              ephemeral: true,
+            },
+          ],
+        ],
+      ];
+      fixture.post(call);
+      expect(fixture.sent.at(-1)).toBe(call);
+    } finally {
+      routing.dispose();
+    }
+  },
+);
+
+it("does not rewrite another Host's port or import id, and disables immediately on feature changes", async () => {
+  const fixture = setup({ hosts: ["local", "remote"] });
+  probe(fixture, enabledSideChats);
+  const routing = await install(fixture);
+  await new Promise(setImmediate);
+  const input = {
+    sourceConversationId: "parent",
+    sideConversation: true,
+    threadSource: "user",
+    ephemeral: true,
+  };
+  const call = (id: number) => ["push", ["pipeline", id, ["forkConversationFromLatest"], [input]]];
+  try {
+    const remote = call(-189);
+    fixture.post(remote);
+    expect(fixture.sent.at(-1)).toBe(remote);
+    const otherPort = call(-188);
+    fixture.post(otherPort, new fixture.MessagePort());
+    expect(fixture.sent.at(-1)).toBe(otherPort);
+    fixture.notify({
+      ...enabledSideChats,
+      settings: { ...enabledSideChats.settings, persistentSideChats: false },
+    });
+    const disabled = call(-188);
+    fixture.post(disabled);
+    expect(fixture.sent.at(-1)).toBe(disabled);
+    fixture.notify(enabledSideChats, "remote");
+    fixture.post(disabled);
+    expect(fixture.sent.at(-1)).toBe(disabled);
+    fixture.notify(enabledSideChats);
+    fixture.post(disabled);
+    expect(fixture.sent.at(-1)).not.toBe(disabled);
+    const local = fixture.connections.get("local");
+    if (!local) throw new Error("Missing local connection");
+    local.status = "disconnected";
+    fixture.post(disabled);
+    expect(fixture.sent.at(-1)).toBe(disabled);
+  } finally {
+    routing.dispose();
+  }
+});
 
 it("routes Host requests through the main-process RPC client without native internals", async () => {
   const fixture = setup();

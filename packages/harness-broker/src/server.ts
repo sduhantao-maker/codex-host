@@ -186,6 +186,7 @@ function sessionMetadata(record: ServerSession): object {
     capabilities: record.session.capabilities,
     readCapabilities: true,
     ...(record.session.steerLifecycle ? { steerLifecycle: true } : {}),
+    captureActiveForkBoundary: record.session.captureActiveForkBoundary !== undefined,
     initialState: {
       ...initialState,
       ...(record.nativeRef ? { nativeRef: record.nativeRef } : {}),
@@ -895,6 +896,22 @@ export async function startHarnessBrokerServer(input: {
       if (request.method === "session.readSnapshot") {
         return requireSession(request.params).session.readSnapshot();
       }
+      if (request.method === "session.captureActiveForkBoundary") {
+        const session = requireSession(request.params).session;
+        const result = session.captureActiveForkBoundary
+          ? await session.captureActiveForkBoundary()
+          : {
+              ok: false,
+              error: {
+                code: "unsupported",
+                message: "Active Fork capture is unavailable",
+                retryable: false,
+              },
+            };
+        if (requireSession(request.params).session !== session)
+          throw new Error("Harness broker Session generation is stale");
+        return result;
+      }
       if (request.method === "session.refreshUsage") {
         const record = requireSession(request.params);
         const refreshUsage = (
@@ -1147,6 +1164,17 @@ export async function startHarnessBrokerServer(input: {
                   retryable: true,
                 },
               });
+              return;
+            }
+            if (parsed.data.method === "session.captureActiveForkBoundary") {
+              // Read-only capture must not queue parent cancellation or approvals.
+              trackedExecution = true;
+              void reply(parsed.data)
+                .finally(() => {
+                  state.queuedFrames -= 1;
+                  scheduleIdle();
+                })
+                .catch(() => socket.destroy());
               return;
             }
             const execution = enqueueRequest(parsed.data);

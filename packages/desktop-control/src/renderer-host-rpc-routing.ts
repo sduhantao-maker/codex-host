@@ -56,6 +56,65 @@ export function installRendererHostRpcRouting(
 
   const isRecord = (value: unknown): value is Record<string, unknown> =>
     typeof value === "object" && value !== null && !Array.isArray(value);
+  type SideChatConnection = {
+    rpc: RendererHostRpc;
+    current(): boolean;
+    probeId: string;
+    tuple: { port: unknown; importId: unknown } | null;
+    enabled: boolean;
+  };
+  let sideChatConnection: SideChatConnection | null = null;
+  let sideChatListenerReady = false;
+  const applySideChatFeatures = (state: SideChatConnection, value: unknown): void => {
+    const result = isRecord(value) && isRecord(value.result) ? value.result : value;
+    const settings = isRecord(result) ? result.settings : null;
+    const capabilities = isRecord(result) ? result.capabilities : null;
+    const fields = ["persistentSideChats", "sideChatLibrary", "claudeActiveSideChatFork"];
+    state.enabled =
+      sideChatListenerReady &&
+      state.current() &&
+      state.tuple !== null &&
+      isRecord(settings) &&
+      isRecord(capabilities) &&
+      fields.every(
+        (field) => typeof settings[field] === "boolean" && typeof capabilities[field] === "boolean",
+      ) &&
+      settings.persistentSideChats === true &&
+      capabilities.persistentSideChats === true;
+  };
+  const sideChatChanged = (event: Event): void => {
+    const { source, data } = event as Event & { source?: unknown; data?: unknown };
+    if (source != null && source !== target) return;
+    const state = sideChatConnection;
+    if (
+      state &&
+      isRecord(data) &&
+      data.type === "mcp-notification" &&
+      data.hostId === "local" &&
+      data.method === "codexhost/sideChat/features/changed"
+    ) {
+      try {
+        applySideChatFeatures(state, data.params);
+      } catch {
+        state.enabled = false;
+      }
+    }
+  };
+  try {
+    target.addEventListener?.("message", sideChatChanged);
+    sideChatListenerReady = typeof target.addEventListener === "function";
+  } catch {
+    /* Original routing remains available without the optional feature listener. */
+  }
+  const localSideChatReady = (state: SideChatConnection): boolean => {
+    const current = read();
+    return (
+      state.enabled &&
+      state.current() &&
+      current !== null &&
+      dependencies.resolve(current, "local") === state.rpc
+    );
+  };
   // Draft creation policy. Desktop's Model hook accepts only catalog Models, so a
   // codexhost carrier never reaches the native collaboration mode. The Renderer
   // still issues each creation call; the selected carrier is applied to that call.
@@ -98,8 +157,8 @@ export function installRendererHostRpcRouting(
       );
     }
   };
-  /** Rewrites only the Model of a Renderer-issued capnweb creation call. */
-  const routeCreationCall = (message: unknown): unknown => {
+  /** A capability probe binds side-chat changes to the verified local RPC connection. */
+  const routeCreationCall = (message: unknown, messagePort: unknown): unknown => {
     if (!Array.isArray(message) || message.length !== 2 || message[0] !== "push") return message;
     const expression: unknown = message[1];
     if (!Array.isArray(expression) || expression.length !== 4 || expression[0] !== "pipeline")
@@ -107,6 +166,39 @@ export function installRendererHostRpcRouting(
     const [, importId, path, args] = expression as [unknown, unknown, unknown, unknown];
     if (!Array.isArray(path) || path.length !== 1 || !Array.isArray(args)) return message;
     const [input, options] = args as unknown[];
+    const state = sideChatConnection;
+    if (
+      state &&
+      path[0] === "sendRequest" &&
+      input === "codexhost/sideChat/features/get" &&
+      isRecord(options) &&
+      options.probeId === state.probeId
+    ) {
+      state.tuple = { port: messagePort, importId };
+    }
+    if (
+      state &&
+      localSideChatReady(state) &&
+      state.tuple !== null &&
+      state.tuple.port === messagePort &&
+      state.tuple.importId === importId &&
+      (path[0] === "forkConversationFromLatest" || path[0] === "forkConversationFromTurn") &&
+      isRecord(input) &&
+      input.sideConversation === true &&
+      input.threadSource === "user" &&
+      typeof input.sourceConversationId === "string" &&
+      input.sourceConversationId.length > 0
+    ) {
+      return [
+        "push",
+        [
+          "pipeline",
+          importId,
+          path,
+          [{ ...input, ephemeral: false, attachToSource: true }, ...args.slice(1)],
+        ],
+      ];
+    }
     if (!isRecord(input) || !isRecord(input.collaborationMode)) return message;
     const settings = input.collaborationMode.settings;
     if (!isRecord(settings)) return message;
@@ -154,7 +246,7 @@ export function installRendererHostRpcRouting(
   const postMessage = function (this: unknown, message: unknown, ...rest: unknown[]): unknown {
     let routed = message;
     try {
-      routed = disposed ? message : routeCreationCall(message);
+      routed = disposed ? message : routeCreationCall(message, this);
     } catch {
       routed = message;
     }
@@ -165,6 +257,35 @@ export function installRendererHostRpcRouting(
   const createRoute = (hostId: string, rpc: RendererHostRpc): RendererHostRoute => {
     let retired = false;
     const isCurrent = (): boolean => !retired && !disposed && routes.get(hostId)?.rpc === rpc;
+    if (hostId === "local") {
+      let probeId = "";
+      try {
+        probeId = crypto.randomUUID();
+      } catch {
+        /* Missing browser crypto disables this feature. */
+      }
+      const state: SideChatConnection = {
+        rpc,
+        current: isCurrent,
+        probeId,
+        tuple: null,
+        enabled: false,
+      };
+      sideChatConnection = state;
+      // Discovery is background work; it cannot delay an original creation or interruption.
+      void Promise.resolve().then(async () => {
+        if (!isCurrent() || !probeId || !sideChatListenerReady) return;
+        try {
+          const result = await rpc.sendRequest("codexhost/sideChat/features/get", {
+            probeId: state.probeId,
+          });
+          if (sideChatConnection === state) applySideChatFeatures(state, result);
+        } catch {
+          state.enabled = false;
+          state.tuple = null;
+        }
+      });
+    }
     const manager: RendererHostRpcManager = Object.freeze({
       kind: "main-process-rpc" as const,
       getHostId: () => hostId,
@@ -314,6 +435,12 @@ export function installRendererHostRpcRouting(
       disposed = true;
       for (const hostId of [...routes.keys()]) retire(hostId);
       discovery = null;
+      sideChatConnection = null;
+      try {
+        target.removeEventListener?.("message", sideChatChanged);
+      } catch {
+        /* Optional cleanup must not affect native routing. */
+      }
       externalDrafts.clear();
       selectedModels.clear();
       if (port.postMessage === postMessage) port.postMessage = originalPostMessage;

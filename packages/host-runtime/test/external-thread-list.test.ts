@@ -50,6 +50,23 @@ function query(params: JsonObject = {}) {
 }
 
 describe("External Thread metadata catalog", () => {
+  it("keeps durable side chats parent-scoped until collected or promoted", () => {
+    const parent = record("parent");
+    const side = record("side", { attachedToThreadId: hostThreadIdSchema.parse("parent") });
+    const other = record("other-side", { attachedToThreadId: hostThreadIdSchema.parse("other") });
+    const list = (params: JsonObject) =>
+      listExternalThreadMetadata({
+        records: [parent, side, other],
+        query: { ...query(params), hideSideChats: true },
+        runtimeFor: () => null,
+      }).data.map(({ thread }) => thread);
+    expect(list({}).map(({ id }) => id)).toEqual(["parent"]);
+    expect(list({ attachedToThreadId: "parent" })).toMatchObject([
+      { id: "side", attachedToThreadId: "parent", ephemeral: false },
+    ]);
+    expect(list({ attachedToThreadId: "missing" })).toEqual([]);
+  });
+
   it("lists scoped native Subagent children and descendants for Desktop summary hydration", () => {
     const parent = record("parent");
     const child = record("child", {

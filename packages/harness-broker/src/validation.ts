@@ -19,6 +19,10 @@ import type { HarnessError, HarnessOutput, HarnessSessionState } from "@codexhos
 import { HARNESS_BROKER_SESSION_IMPORT_PAGE_SIZE } from "./protocol.js";
 
 const cwdSchema = z.string().min(1).max(16_384);
+export const activeForkBoundarySchema = z.strictObject({
+  turnId: hostTurnIdSchema,
+  checkpoint: nativeCheckpointRefSchema,
+});
 // A remote caller may propagate only the Host's scoped delegation context,
 // never change the Aqua process's HOME, PATH, loader or native credentials.
 export const brokerEnvironmentSchema = z

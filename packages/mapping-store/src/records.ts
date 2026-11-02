@@ -55,7 +55,16 @@ const storedThreadCoreV1Shape = {
   archived: z.boolean(),
   transportModelId: nonBlankTextSchema.max(1_024),
   ephemeral: z.boolean(),
+  pendingInjectedText: z.array(z.string()).optional(),
   historyMode: z.enum(["legacy", "paginated"]),
+  attachedToThreadId: storedHostThreadIdSchema.optional(),
+  sideChatOrigin: z
+    .object({
+      threadId: storedHostThreadIdSchema,
+      projectId: nonBlankTextSchema.max(1_024).optional(),
+    })
+    .strict()
+    .optional(),
   forkSource: z
     .object({
       hostThreadId: hostThreadIdSchema,
@@ -252,6 +261,8 @@ export interface CreateProvisionalThreadInput {
   transportModelId: string;
   ephemeral: boolean;
   historyMode: "legacy" | "paginated";
+  attachedToThreadId?: HostThreadId;
+  sideChatOrigin?: { threadId: HostThreadId; projectId?: string };
   forkSource?: { hostThreadId: HostThreadId; hostTurnId: HostTurnId };
   subagent?: {
     parentHostThreadId: HostThreadId;

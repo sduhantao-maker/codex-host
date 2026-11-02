@@ -16,6 +16,7 @@ import {
 } from "@codexhost/shared-contracts";
 
 import { mapClaudeSnapshot } from "./claude-history.js";
+import { CLAUDE_ACTIVE_SIDECHAT_CHECKPOINT, claudeForkPrefix } from "./claude-fork-boundary.js";
 import type { ClaudePendingSessions } from "./pending-session.js";
 import type { ClaudeAdapterDependencies } from "./transport.js";
 
@@ -41,6 +42,10 @@ type ClaudeForkInput = ClaudeForkBase &
 
 function error(code: HarnessError["code"], message: string, retryable: boolean): HarnessError {
   return { code, message, retryable };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function comparableTurn(turn: HostTurnSnapshot): unknown {
@@ -69,10 +74,16 @@ async function readSnapshot(
   dependencies: ClaudeForkInput["dependencies"],
   cwd: string,
   sessionId: string,
+  activeBoundary?: { checkpointId: string; sourceSessionId?: string },
 ): Promise<HarnessResult<HostThreadSnapshot>> {
   let messages: unknown[];
   try {
-    messages = (await dependencies.readSessionMessages({ cwd, sessionId })) ?? [];
+    messages =
+      (await dependencies.readSessionMessages({
+        cwd,
+        sessionId,
+        ...(activeBoundary ? { includeControlRecords: true } : {}),
+      })) ?? [];
   } catch {
     return {
       ok: false,
@@ -86,6 +97,51 @@ async function readSnapshot(
     };
   }
   try {
+    if (activeBoundary) {
+      let checkpointId = activeBoundary.checkpointId;
+      if (activeBoundary.sourceSessionId) {
+        const entries = new Map<string, Record<string, unknown>>();
+        for (const message of messages) {
+          if (isRecord(message) && typeof message.uuid === "string")
+            entries.set(message.uuid, message);
+        }
+        const main = [...entries.values()].filter(
+          (message) =>
+            message.isSidechain !== true &&
+            (message.type === "user" || message.type === "assistant"),
+        );
+        const matches = main.filter((message) => {
+          const origin = message.forkedFrom;
+          return (
+            isRecord(origin) &&
+            origin.sessionId === activeBoundary.sourceSessionId &&
+            origin.messageUuid === activeBoundary.checkpointId
+          );
+        });
+        // The SDK copies abandoned branches too; validate the selected branch without hiding later input.
+        if (
+          matches.length !== 1 ||
+          matches[0] !== main.at(-1) ||
+          typeof matches[0]?.uuid !== "string"
+        )
+          return {
+            ok: false,
+            error: error("protocolError", "Claude Code Fork boundary provenance is invalid", false),
+          };
+        checkpointId = matches[0].uuid;
+      }
+      const prefix = claudeForkPrefix(messages, checkpointId);
+      if (!prefix)
+        return {
+          ok: false,
+          error: error(
+            "checkpointNotFound",
+            "Claude Code Fork boundary is unavailable or has incomplete tools",
+            true,
+          ),
+        };
+      messages = prefix;
+    }
     return { ok: true, value: mapClaudeSnapshot(messages, sessionId) };
   } catch {
     return {
@@ -147,7 +203,21 @@ export async function forkClaudeSession(
 
   // Native worktree entry changes the Session cwd without changing the Desktop workspace.
   // The SDK resolves the source within that workspace's project/worktree history.
-  const source = await readSnapshot(input.dependencies, input.cwd, sourceRef.data.nativeSessionId);
+  const locator = checkpoint?.success ? checkpoint.data.locator : null;
+  const activeSideChat =
+    typeof locator === "object" &&
+    locator !== null &&
+    !Array.isArray(locator) &&
+    locator.kind === CLAUDE_ACTIVE_SIDECHAT_CHECKPOINT.kind &&
+    locator.version === CLAUDE_ACTIVE_SIDECHAT_CHECKPOINT.version;
+  const forkCheckpointId =
+    activeSideChat && checkpoint?.success ? checkpoint.data.checkpointId : undefined;
+  const source = await readSnapshot(
+    input.dependencies,
+    input.cwd,
+    sourceRef.data.nativeSessionId,
+    forkCheckpointId ? { checkpointId: forkCheckpointId } : undefined,
+  );
   if (!source.ok) return source;
   if (input.kind === "rollbackLastTurn" && source.value.turns.length === 0) {
     return {
@@ -185,12 +255,15 @@ export async function forkClaudeSession(
   const boundaryIndex =
     input.kind === "rollbackLastTurn"
       ? source.value.turns.length - 2
-      : source.value.turns.findIndex(
-          (turn) =>
-            checkpoint?.success && turn.checkpoint?.checkpointId === checkpoint.data.checkpointId,
-        );
+      : activeSideChat
+        ? source.value.turns.length - 1
+        : source.value.turns.findIndex(
+            (turn) =>
+              checkpoint?.success && turn.checkpoint?.checkpointId === checkpoint.data.checkpointId,
+          );
   const retained = source.value.turns[boundaryIndex];
   const boundaryId =
+    forkCheckpointId ??
     retained?.checkpoint?.checkpointId ??
     (input.kind === "rollbackLastTurn" ? retained?.nativeTurnRef.nativeTurnKey : undefined);
   if (boundaryIndex < 0 || !boundaryId) {
@@ -229,8 +302,20 @@ export async function forkClaudeSession(
       .catch(() => undefined);
   };
   const [derived, sourceAfter] = await Promise.all([
-    readSnapshot(input.dependencies, input.cwd, derivedSessionId),
-    readSnapshot(input.dependencies, input.cwd, sourceRef.data.nativeSessionId),
+    readSnapshot(
+      input.dependencies,
+      input.cwd,
+      derivedSessionId,
+      forkCheckpointId
+        ? { checkpointId: forkCheckpointId, sourceSessionId: sourceRef.data.nativeSessionId }
+        : undefined,
+    ),
+    readSnapshot(
+      input.dependencies,
+      input.cwd,
+      sourceRef.data.nativeSessionId,
+      forkCheckpointId ? { checkpointId: forkCheckpointId } : undefined,
+    ),
   ]);
   if (!derived.ok) {
     await cleanup();
