@@ -26,6 +26,7 @@ for relative in \
   libexec/codexhost-updater \
   runtime/node \
   app/codexhost-distribution.json \
+  app/personal-build.json \
   app/console-server.mjs \
   app/console-web.js \
   app/desktop-controller.mjs \
@@ -118,6 +119,8 @@ cat > "$CONTENTS/Info.plist" <<PLIST
 PLIST
 
 /usr/bin/plutil -lint "$CONTENTS/Info.plist" >/dev/null
+node "$(cd "$(dirname "$0")" && pwd)/../personal-build.mjs" --stamp-plist \
+  "$CONTENTS/Info.plist" "$RESOURCES/app/personal-build.json"
 /usr/bin/codesign --force --sign - "$RESOURCES/runtime/node"
 /usr/bin/codesign --force --sign - "$RESOURCES/libexec/codexhost-shim"
 /usr/bin/codesign --force --sign - "$RESOURCES/libexec/codexhost-updater"

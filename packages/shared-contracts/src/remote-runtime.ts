@@ -15,6 +15,7 @@ export const runtimeStatusSchema = z.object({
   restartRequired: z.boolean(),
   remote: z.boolean(),
   updateSupported: z.boolean(),
+  installationDisabledReason: z.string().min(1).max(500).optional(),
   update: z.object({
     phase: remoteUpdatePhaseSchema,
     targetVersion: z.string().nullable(),

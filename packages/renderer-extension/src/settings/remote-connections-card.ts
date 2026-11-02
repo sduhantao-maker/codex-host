@@ -70,12 +70,15 @@ export function remoteMaintenanceTarget(
   remote: RuntimeStatus,
 ): string | null {
   if (!remote.updateSupported) return null;
+  if (remote.installationDisabledReason)
+    return remote.restartRequired ? remote.installedVersion : null;
   return (
     newerLocalVersion(local, remote) ?? (remote.restartRequired ? remote.installedVersion : null)
   );
 }
 
 function newerLocalVersion(local: RuntimeStatus | null, remote: RuntimeStatus): string | null {
+  if (remote.installationDisabledReason) return null;
   return remoteUpdateTarget(local, { ...remote, update: { ...remote.update, phase: "idle" } });
 }
 
@@ -206,6 +209,14 @@ function serviceSummary(
       "warning",
       t("需要重启以使用已安装的版本", "Restart needed to use the installed version"),
     ]);
+  if (remote.installationDisabledReason)
+    hints.push([
+      "neutral",
+      t(
+        "此个人构建使用受控升级，不会从此处安装其他版本。",
+        "This personal build uses controlled upgrades and does not install other versions here.",
+      ),
+    ]);
   const newer = newerLocalVersion(local, remote);
   const localVersion = local?.runningVersion;
   if (remoteBusy(remote)) {
@@ -217,7 +228,13 @@ function serviceSummary(
     ]);
   else if (localVersion && remote.installedVersion === localVersion && !remote.restartRequired)
     hints.push(["success", t("与本机版本一致", "Matches this computer")]);
-  if (localVersion && remote.installedVersion && localVersion !== remote.installedVersion && !newer)
+  if (
+    localVersion &&
+    remote.installedVersion &&
+    localVersion !== remote.installedVersion &&
+    !newer &&
+    !remote.installationDisabledReason
+  )
     hints.push([
       "warning",
       t(

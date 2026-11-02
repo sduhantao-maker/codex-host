@@ -92,10 +92,11 @@ describe("release Payload", () => {
       await createPayload(root, target);
       const paths = await validatePayload({ payloadRoot: root, target, root: "/repo/source" });
       expect(paths).toEqual(expectedPayloadPaths(target));
-      expect(paths).toHaveLength(32 + preinstalledHarnessPluginPaths().length);
+      expect(paths).toHaveLength(33 + preinstalledHarnessPluginPaths().length);
       expect(expectedPayloadPaths(releaseTarget("windows-x64"))).toHaveLength(
-        34 + preinstalledHarnessPluginPaths().length,
+        35 + preinstalledHarnessPluginPaths().length,
       );
+      expect(paths).toContain("app/personal-build.json");
       expect(paths).toContain("licenses/tailwindcss-LICENSE.txt");
       expect(paths).toContain("app/plugins/enabled.json");
       expect(paths).toContain("app/console-server.mjs");
@@ -112,6 +113,7 @@ describe("release Payload", () => {
       );
       expect(paths).toContain("libexec/codexhost-updater");
       expect(paths).toContain("app/codexhost-distribution.json");
+      expect(paths).toContain("app/personal-build.json");
       expect(paths).not.toContain("release-manifest.json");
       expect(paths).not.toContain("SHA256SUMS.txt");
       await writeFile(path.join(root, "app/host-runtime.js.map"), "unexpected");

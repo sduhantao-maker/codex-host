@@ -62,6 +62,20 @@ describe("update command", () => {
     await expect(runUpdateCommand(target, updates, vi.fn())).rejects.toThrow("Quit Codex Desktop");
   });
 
+  it("explains controlled upgrades without starting installation", async () => {
+    const updates = fixture();
+    const checked = await updates.check(target);
+    updates.check.mockResolvedValue({
+      ...checked,
+      installationAvailable: false,
+      installationDisabledReason: "Upgrade through the personal fork",
+    });
+    await expect(runUpdateCommand(target, updates, vi.fn())).rejects.toThrow(
+      "Upgrade through the personal fork",
+    );
+    expect(updates.start).not.toHaveBeenCalled();
+  });
+
   it("rejects unknown arguments before inspecting or updating", async () => {
     await expect(updateFromCommand("/unused", ["extra"])).rejects.toThrow("accepts no arguments");
   });

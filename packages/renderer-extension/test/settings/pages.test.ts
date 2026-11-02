@@ -2738,6 +2738,53 @@ describe("Renderer Updates page", () => {
     },
   );
 
+  it("shows personal build identity without changing semantic update data", async () => {
+    vi.resetModules();
+    const displayVersion = "0.16.1+sidechat.12345678";
+    vi.stubGlobal("__CODEXHOST_PERSONAL_BUILD_VERSION__", displayVersion);
+    const scopes: RendererSettingsPageScope[] = [];
+    try {
+      const { createDefaultRendererSettingsPages: personalPages } =
+        await import("../../src/settings/pages.js");
+      const response = {
+        ...updateCheck(),
+        currentVersion: "0.15.9",
+        latestVersion: "0.16.2",
+        updateAvailable: true,
+      };
+      const client = {
+        checkUpdate: vi.fn(async () => response),
+        startUpdate: vi.fn(),
+        readUpdateStatus: vi.fn(),
+      };
+      const pages = personalPages(rendererSettingsMessages("zh-CN"), () => client);
+      for (const id of ["about", "updates"]) {
+        const page = pages.find((item) => item.id === id);
+        if (!page) throw new Error("Personal build page is missing");
+        const content = new FakeDocument().createElement("main");
+        const scope = new RendererSettingsPageScope();
+        scopes.push(scope);
+        page.mount({
+          content: content as unknown as HTMLElement,
+          signal: scope.signal,
+          runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+        });
+        await vi.waitFor(() => expect(visibleText(content)).toContain(displayVersion));
+        if (id === "updates") {
+          await vi.waitFor(() => expect(visibleText(content)).toContain("v0.15.9"));
+          expect(visibleText(content)).toContain("个人构建");
+        }
+      }
+      expect(response.currentVersion).toBe("0.15.9");
+      expect(response.latestVersion).toBe("0.16.2");
+      expect(response.updateAvailable).toBe(true);
+    } finally {
+      for (const scope of scopes) scope.dispose();
+      vi.unstubAllGlobals();
+      vi.resetModules();
+    }
+  });
+
   it("renders the open-source project introduction on the About page", () => {
     const page = createDefaultRendererSettingsPages(rendererSettingsMessages("zh-CN")).find(
       ({ id }) => id === "about",
@@ -2830,6 +2877,52 @@ describe("Renderer Updates page", () => {
     expect(visibleText(plain)).not.toContain("Open console");
     plainScope.dispose();
   });
+
+  it.each([null, "Release query unavailable"])(
+    "keeps controlled-upgrade guidance without official install fallback (check error=%s)",
+    async (error) => {
+      const installationDisabledReason =
+        "Upgrade through the personal fork after compatibility checks.";
+      const client = {
+        checkUpdate: vi.fn(async () => ({
+          ...updateCheck(),
+          installationAvailable: false,
+          installationDisabledReason,
+          error,
+        })),
+        startUpdate: vi.fn(),
+        readUpdateStatus: vi.fn(async () => ({ status: null })),
+      };
+      const page = createDefaultRendererSettingsPages(
+        rendererSettingsMessages("en"),
+        () => client,
+      ).find(({ id }) => id === "updates");
+      if (!page) throw new Error("Updates page is not registered");
+      const document = new FakeDocument();
+      const content = document.createElement("main");
+      const scope = new RendererSettingsPageScope();
+      const cleanup = page.mount({
+        content: content as unknown as HTMLElement,
+        signal: scope.signal,
+        runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+      });
+      await vi.waitFor(() => expect(visibleText(content)).toContain(installationDisabledReason));
+      expect(elementWithClass(content, "settings-update-controls").hidden).toBe(true);
+      const panel = elementWithClass(content, "settings-update-panel");
+      expect(panel.dataset.updateState).toBe(error ? "error" : "available");
+      expect(visibleNotesText(elementWithClass(content, "settings-update-notes"))).toContain(
+        "Safer updates",
+      );
+      expect(
+        descendants(panel)
+          .filter(({ tagName }) => tagName === "button")
+          .map(visibleNotesText),
+      ).not.toContain(rendererSettingsMessages("en").updateAndRestart);
+      expect(client.startUpdate).not.toHaveBeenCalled();
+      cleanup?.();
+      scope.dispose();
+    },
+  );
 
   it("renders GitHub Release notes as structured Markdown", async () => {
     const client = {
