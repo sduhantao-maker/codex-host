@@ -1,9 +1,11 @@
 import { build } from "esbuild";
 import path from "node:path";
+import { readPersonalBuildIdentity } from "../../../scripts/release/personal-build.mjs";
 
 import { tailwindEsbuildPlugin } from "./tailwind-esbuild-plugin.mjs";
 
 const packageRoot = path.resolve(import.meta.dirname, "..");
+const identity = readPersonalBuildIdentity(path.resolve(packageRoot, "../.."));
 const entries = [
   { entry: "src/index.ts", format: "esm", outfile: "dist/index.js" },
   { entry: "src/production-entry.ts", format: "iife", outfile: "dist/production.js" },
@@ -20,6 +22,7 @@ for (const { entry, format, outfile } of entries) {
     platform: "browser",
     format,
     target: "es2024",
+    define: { __CODEXHOST_PERSONAL_BUILD_VERSION__: JSON.stringify(identity.displayVersion) },
     loader: { ".png": "dataurl", ".svg": "dataurl", ".css": "text" },
     plugins: [tailwindEsbuildPlugin()],
     outfile,

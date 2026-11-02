@@ -7,6 +7,7 @@ import type {
   UpdateStatusResult,
 } from "@codexhost/shared-contracts";
 import {
+  UPDATE_INSTALLATION_DISABLED_REASON,
   acquireUpdateOperationLock,
   cleanupTerminalUpdateState,
   compareSemanticVersions,
@@ -222,6 +223,24 @@ export function createConsoleUpdates(options: CreateConsoleUpdatesOptions): Cons
         status: null,
         error: null,
       };
+      if (UPDATE_INSTALLATION_DISABLED_REASON) {
+        const controlled = {
+          ...empty,
+          installationDisabledReason: UPDATE_INSTALLATION_DISABLED_REASON,
+        };
+        try {
+          const release = await fetchLatest(signal);
+          return {
+            ...controlled,
+            latestVersion: release.version,
+            updateAvailable: compareSemanticVersions(empty.currentVersion, release.version) < 0,
+            releaseNotes: release.releaseNotes,
+            releaseNotesUrl: release.releaseNotesUrl,
+          };
+        } catch (error) {
+          return { ...controlled, error: boundedError(error) };
+        }
+      }
       if (!metadata) {
         return { ...empty, error: "This codexhost is a source checkout without release metadata" };
       }
@@ -253,6 +272,9 @@ export function createConsoleUpdates(options: CreateConsoleUpdatesOptions): Cons
     },
 
     async start(target: ConsoleUpdateTarget): Promise<UpdateStartResult> {
+      if (UPDATE_INSTALLATION_DISABLED_REASON) {
+        throw new ConsoleUpdateError("unsupported", UPDATE_INSTALLATION_DISABLED_REASON);
+      }
       if (target.codexhostRunning) {
         throw new ConsoleUpdateError(
           "codex-running",
