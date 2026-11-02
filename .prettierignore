@@ -1,6 +1,7 @@
 **/*.md
 **/*.wxs
 .pi/
+.codexhost/
 # Local-only design scratch files.
 .local/
 reference/
