@@ -39,7 +39,7 @@ async function fixture(conflict = false) {
   git("commit", "-m", "official next");
   git("tag", "v0.18.0");
   git("switch", "-c", "iverson/personal", "v0.17.0");
-  for (let number = 1; number <= 5; number++) {
+  for (let number = 1; number <= 6; number++) {
     const name = `patch-${number}.txt`;
     await writeFile(path.join(root, name), `${number}\n`);
     git("add", name);
@@ -59,7 +59,7 @@ async function fixture(conflict = false) {
         "tools/personal/example.test.mjs",
       );
     }
-    git("commit", "-m", `P${number} fixture`);
+    git("commit", "-m", `P${number}: fixture`);
   }
   git("remote", "add", "upstream", root);
   const head = git("rev-parse", "HEAD");
@@ -106,7 +106,7 @@ describe("personal upgrade orchestration", () => {
       expect(result.status, result.stderr).toBe(0);
       expect(state.git("rev-parse", "iverson/personal")).toBe(state.head);
       expect(state.git("branch", "--show-current")).toBe("iverson/personal");
-      expect(state.git("rev-list", "--count", "v0.18.0..iverson/personal-v0.18.0")).toBe("5");
+      expect(state.git("rev-list", "--count", "v0.18.0..iverson/personal-v0.18.0")).toBe("6");
       const output = path.join(state.directory, "codex-host-personal-v0.18.0");
       const commands = (await readFile(path.join(output, "commands.log"), "utf8"))
         .trim()

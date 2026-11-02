@@ -1,6 +1,6 @@
 # 个人版需求与升级
 
-个人版以官方发布 tag 为基座，P1–P5 各一个提交。每次升级先检查官方是否已满足对应需求；满足后采用官方实现，删除重复补丁。侧聊扩展默认关闭，开关不影响官方已有的图片引导。
+个人版以官方发布 tag 为基座，P1–P6 各一个提交。每次升级先检查官方是否已满足对应需求；满足后采用官方实现，删除重复补丁。侧聊扩展默认关闭，开关不影响官方已有的图片引导。
 
 | 编号 | 需求 | 官方 0.17.0 状态 | 个人补丁与快速核对方法 |
 | --- | --- | --- | --- |
@@ -12,6 +12,8 @@
 | R6 | 带图片的引导 | 已满足 #654 | 直接使用官方。检查 `renderer-external-steering.ts`、Adapter 媒体输入路径及官方相关测试；不恢复旧版纯文本替代实现。 |
 | R7 | 侧聊不过期，独立上下文，收纳关联项目与父对话 | 未满足 | P4。检查 `side-chat-features.ts`、`side-chat-library.ts`、`side-chat-collection.ts`、renderer 侧聊模块；跑 `*side*test.ts`、`renderer-sidechat*`、`tools/sidechat-installed-contract.test.mjs`。全关时不得改写 fork、读取收纳文件或改变 Claude 普通 fork。 |
 
+| R8 | DeepSeek 会话出错不能让整个 codexhost 退出 | 未满足 | P6。检查官方 `deepseek-harness/src/modern/session.ts` 的 `close()`：未被等待的拒绝须立即有处理器，同时原拒绝仍返回给调用者。跑 `deepseek-harness/test/modern/session.test.ts` 的 fault 后关闭三种路径及插件现有测试；不得吞掉关闭未确认或改变 Host 全局异常策略。 |
+
 生成期原生引导要求 CLI 同时宣告 `msg_lifecycle_v1` 和 `interrupt_cancel_queued_v1`；缺少能力时保持官方路线。停止发生在 CLI 已接管的间隙，引导可能短暂开始，但官方保护应立即中断，不产生工具、回答、canonical 或自主轮。工具期停止已观测到第一条新回复混有旧引导标记、第二条恢复的官方限制，仍须在 A/B 中检查，不能声称完全消除。
 
 升级命令：
@@ -20,7 +22,7 @@
 bash tools/personal/upgrade-to-official.sh v0.18.0
 ```
 
-在干净的 `iverson/personal` 或后续 `iverson/personal-v*` 分支执行，使用 Node 24。脚本只 fetch 官方 tag，在相邻新 worktree 的 `iverson/personal-<tag>` 上重放剩余的个人补丁，不改原分支。初始为五个提交；官方等价实现取代补丁后允许减少，P5 保持最后一个。它先打印与 P1–P4 重叠的官方文件和提交标题；冲突时保留新 worktree 并停止，供按本表核对和取舍。没有冲突也仍要审阅官方等价实现，脚本不能替代需求判断。
+在干净的 `iverson/personal` 或后续 `iverson/personal-v*` 分支执行，使用 Node 24。脚本只 fetch 官方 tag，在相邻新 worktree 的 `iverson/personal-<tag>` 上重放剩余的个人补丁，不改原分支。初始为六个提交；官方等价实现取代补丁后允许减少，最后保留升级工具所属的 P5 或 P6。它先打印与 P1–P6 重叠的官方文件和提交标题；冲突时保留新 worktree 并停止，供按本表核对和取舍。没有冲突也仍要审阅官方等价实现，脚本不能替代需求判断。
 
 脚本的构建、格式、类型、Lint 和快速测试使用各自临时 HOME；沿用 Cargo/npm 缓存和工作区已有的 `.codexhost` 工具链，不读取真实聊天配置。快速测试入口为 `bash tools/personal/quick-tests.sh`，会只读审计 `/Applications/ChatGPT.app/Contents/Resources/app.asar`；其他安装位置可指定 `CODEXHOST_SIDECHAT_ASAR`，缺失时失败而非跳过。打包后打印 DMG、包内 runtime 的 SHA-256，写同名 `.dmg.sha256`。产物留在新 worktree 的 `build/release`，不会安装、发布、推送或重启应用。
 

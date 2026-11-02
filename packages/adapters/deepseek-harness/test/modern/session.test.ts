@@ -3252,6 +3252,51 @@ describe("DeepSeek Harness Modern Session", () => {
     expect(test.journal.closeCalls).toBe(1);
   });
 
+  it.each(["unawaited", "awaited", "repeated"] as const)(
+    "handles faulted Session close rejection when %s without hiding stop uncertainty",
+    async (mode) => {
+      const test = setup([() => accepted()], [], ["request-1"]);
+      const outputs = lifecycleOutputs(test.session);
+      await test.session.execute({
+        type: "turn.start",
+        turnId: turnId("fault-close-rejection"),
+        input: [{ type: "text", text: "mine" }],
+      });
+      test.feed.push(event(0, "turn/start", { turn: 1 }));
+      test.feed.push(event(1, "step/start", { turn: 1, step: 1 }));
+      test.feed.push(userMessage(2, "mine", "request-1"));
+      await nextEvent(outputs);
+      test.session.fault({ code: "protocolError", message: "broken journal", retryable: false });
+      await eventsThrough(outputs, "session.faulted");
+
+      const unhandled = vi.fn();
+      process.on("unhandledRejection", unhandled);
+      try {
+        const closing = test.session.close();
+        if (mode === "awaited") {
+          await expect(closing).rejects.toThrow("native execution stop was not confirmed");
+        } else {
+          if (mode === "repeated") expect(test.session.close()).toBe(closing);
+          // Some callers retire the Session before awaiting its shared close result.
+          await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+        const failure: unknown = await closing.catch((error: unknown) => error);
+        expect(failure).toBeInstanceOf(Error);
+        expect(failure).toHaveProperty(
+          "message",
+          "DeepSeek Harness native execution stop was not confirmed before the Session fault",
+        );
+        await expect(test.session.close()).rejects.toBe(failure);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(unhandled).not.toHaveBeenCalled();
+        expect(test.feed.seen.some(({ type }) => type === "turn/end")).toBe(false);
+        expect(test.journal.closeCalls).toBe(1);
+      } finally {
+        process.off("unhandledRejection", unhandled);
+      }
+    },
+  );
+
   it("rejects stop confirmation when an active Session faults before close", async () => {
     const test = setup([() => accepted()], [], ["request-1"]);
     const outputs = lifecycleOutputs(test.session);

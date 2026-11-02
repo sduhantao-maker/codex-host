@@ -24,6 +24,7 @@ done < <(git ls-files -z -- \
   'packages/host-runtime/test/*controlled-updates.test.ts' \
   'packages/harness-broker/test/broker-fork.test.ts' \
   'packages/harness-broker/test/broker-steer-*.test.ts' \
+  'packages/adapters/deepseek-harness/test/**/*.test.ts' \
   'packages/adapters/claude-code/test/claude-code-adapter.test.ts' \
   'packages/adapters/claude-code/test/sdk-transport.test.ts' \
   'packages/adapters/claude-code/test/claude-active-fork.test.ts' \

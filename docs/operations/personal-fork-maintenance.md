@@ -1,6 +1,6 @@
 # 个人 Fork 维护
 
-当前个人版采用官方发布 tag 加 P1–P5 补丁栈，分支为 `iverson/personal`，工作区为 `/Users/iverson/Code/codex-host-personal`。需求、官方等价实现的取舍和升级命令以 [个人版需求与升级](../personal/requirements.md) 为准。旧 stable 与 sidechat 工作区保留，不再作为当前基座升级流程。
+当前个人版采用官方发布 tag 加 P1–P6 补丁栈，分支为 `iverson/personal`，工作区为 `/Users/iverson/Code/codex-host-personal`。需求、官方等价实现的取舍和升级命令以 [个人版需求与升级](../personal/requirements.md) 为准。旧 stable 与 sidechat 工作区保留，不再作为当前基座升级流程。
 
 每次升级先核对官方已满足的需求，删除对应的重复补丁；生成期引导和侧聊等未满足部分继续保留。构建与测试使用 Node 24 和临时 HOME。新版本在独立工作区重放补丁，有冲突或检查失败就停下，不改原分支。
 
