@@ -640,6 +640,8 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
       });
     }
     this.#closePromise ??= this.#performClose();
+    // A retiring caller may defer awaiting; retain the rejecting result for its stop check.
+    void this.#closePromise.catch(() => undefined);
     return this.#closePromise;
   }
 
