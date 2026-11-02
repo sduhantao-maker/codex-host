@@ -1,4 +1,5 @@
 import type * as ChildProcess from "node:child_process";
+import type * as UpdateManager from "@codexhost/update-manager";
 import { EventEmitter } from "node:events";
 import { mkdtemp, mkdir, writeFile, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -8,6 +9,10 @@ const spawn = vi.hoisted(() => vi.fn());
 vi.mock("node:child_process", async (original) => ({
   ...(await original<typeof ChildProcess>()),
   spawn,
+}));
+vi.mock("@codexhost/update-manager", async (original) => ({
+  ...(await original<typeof UpdateManager>()),
+  UPDATE_INSTALLATION_DISABLED_REASON: null,
 }));
 import { RuntimeMaintenance } from "../src/runtime-maintenance.js";
 const directories: string[] = [];

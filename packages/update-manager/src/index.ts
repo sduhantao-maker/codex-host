@@ -62,3 +62,7 @@ export {
 export const packageMetadata = {
   name: "@codexhost/update-manager",
 } as const;
+
+// Official installers would replace this fork's side-chat changes.
+export const UPDATE_INSTALLATION_DISABLED_REASON: string | null =
+  "This personal build uses controlled upgrades. Merge and validate upstream changes in sduhantao-maker/codex-host, then install your own build.";

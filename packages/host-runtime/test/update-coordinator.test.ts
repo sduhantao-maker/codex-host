@@ -17,6 +17,8 @@ import { createHostUpdateCoordinator } from "../src/update-coordinator.js";
 const discovery = vi.hoisted(() => ({ cli: vi.fn(), http: vi.fn() }));
 vi.mock("@codexhost/update-manager", async (importOriginal) => ({
   ...(await importOriginal<typeof UpdateManager>()),
+  // Preserve the upstream updater checks; controlled-updates.test.ts covers this fork's policy.
+  UPDATE_INSTALLATION_DISABLED_REASON: null,
   fetchLatestGitHubReleaseWithGitHubCli: discovery.cli,
   fetchLatestGitHubRelease: discovery.http,
 }));

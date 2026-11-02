@@ -16,6 +16,7 @@ import {
 import { homedir } from "node:os";
 import path from "node:path";
 import {
+  UPDATE_INSTALLATION_DISABLED_REASON,
   compareSemanticVersions,
   defaultUpdateStateDirectory,
   readRuntimeMetadata,
@@ -120,6 +121,8 @@ export class RuntimeMaintenance {
   #sshPending = new Set<string>();
   async setupSsh(input: RemoteSshSetupParams): Promise<RemoteSshSetupResult> {
     if (this.options.remote) throw new Error("SSH installation must run from the local computer");
+    if (input.action === "update" && UPDATE_INSTALLATION_DISABLED_REASON)
+      throw new Error(UPDATE_INSTALLATION_DISABLED_REASON);
     const key = JSON.stringify([input.hostname, input.port, input.identity]);
     if (this.#sshPending.has(key))
       throw new Error("An SSH operation is already running for this connection");
@@ -249,6 +252,9 @@ export class RuntimeMaintenance {
       restartRequired,
       remote: this.options.remote,
       updateSupported: !!resources && installed?.distribution === "npm",
+      ...(UPDATE_INSTALLATION_DISABLED_REASON
+        ? { installationDisabledReason: UPDATE_INSTALLATION_DISABLED_REASON }
+        : {}),
       update: { ...this.#update },
     };
   }
@@ -267,6 +273,8 @@ export class RuntimeMaintenance {
   }
   async #schedule(version: string): Promise<RuntimeStatus> {
     const status = await this.status();
+    if (UPDATE_INSTALLATION_DISABLED_REASON && version !== status.installedVersion)
+      throw new Error(UPDATE_INSTALLATION_DISABLED_REASON);
     if (!status.updateSupported || !status.installedVersion)
       throw new Error("Remote update requires an npm installation with the current updater");
     if (compareSemanticVersions(version, status.installedVersion) < 0)
@@ -300,6 +308,8 @@ export class RuntimeMaintenance {
       throw new Error("The remote installation changed; refresh versions before retrying");
     }
     const restartOnly = version === installed.version;
+    if (UPDATE_INSTALLATION_DISABLED_REASON && !restartOnly)
+      throw new Error(UPDATE_INSTALLATION_DISABLED_REASON);
     const resources = await this.#resources();
     if (!resources) throw new Error("Remote updater is unavailable");
     const directory = path.dirname(this.#statusPath);

@@ -4,6 +4,7 @@ import {
   type RendererUsageStatisticsRequest,
 } from "../console/pages/usage-statistics.js";
 import { consoleMessages } from "../console/messages.js";
+import { PERSONAL_BUILD_VERSION } from "../personal-build.js";
 import { createRemoteConnectionsPage } from "./remote-connections-page.js";
 import type { RemoteConnectionsControl } from "../remote-connections-control.js";
 import type {
@@ -228,6 +229,12 @@ function aboutPage(
       const product = document.createElement("strong");
       product.className = "settings-about-product";
       product.textContent = "CodexHost";
+      if (PERSONAL_BUILD_VERSION) {
+        const version = document.createElement("code");
+        version.className = "settings-about-build-version";
+        version.textContent = PERSONAL_BUILD_VERSION;
+        product.append(" ", version);
+      }
       const tagline = document.createElement("strong");
       tagline.className = "settings-about-tagline";
       tagline.textContent = messages.aboutTagline;
@@ -318,6 +325,13 @@ function updatesPage(
       const currentVersionValue = createMetadataItem(messages.updateCurrentVersion);
       const latestVersionValue = createMetadataItem(messages.updateLatestVersion);
       const installationValue = createMetadataItem(messages.updateInstallation);
+      if (PERSONAL_BUILD_VERSION) {
+        const build = createMetadataItem(
+          messages.locale === "zh-CN" ? "个人构建" : "Personal build",
+        );
+        build.className += " settings-update-personal-build";
+        build.textContent = PERSONAL_BUILD_VERSION;
+      }
 
       const panel = document.createElement("section");
       panel.className = "settings-update-panel";
@@ -328,6 +342,7 @@ function updatesPage(
       // should never be more than a glance away.
       const controls = document.createElement("div");
       controls.className = "settings-update-controls";
+      controls.hidden = true;
       const manualTitle = document.createElement("div");
       manualTitle.className = "settings-update-manual-title";
       manualTitle.textContent = messages.updateManualTitle;
@@ -439,6 +454,7 @@ function updatesPage(
       // Unavailable can follow a rendered check (Retry after an error), so it
       // restores the metadata and manual controls to their unchecked state.
       const renderUnavailable = (detail: string): void => {
+        controls.hidden = true;
         currentVersionValue.textContent = "-";
         latestVersionValue.textContent = "-";
         latestVersionValue.className = "";
@@ -577,6 +593,7 @@ function updatesPage(
           ? "settings-update-metadata__value--newer"
           : "";
         installationValue.textContent = installationLabel(result.installation, messages);
+        controls.hidden = Boolean(result.installationDisabledReason);
         manualNpm.hidden = result.installation !== "npm";
         manualWindowsInstaller.hidden = !windows || result.installation !== "windows-installer";
         releaseLink.hidden = windows;
@@ -632,8 +649,18 @@ function updatesPage(
           error.textContent = result.error;
           panel.append(error);
         }
+        if (result.installationDisabledReason) {
+          const notice = document.createElement("p");
+          notice.className = "settings-update-manual-description";
+          notice.textContent = result.installationDisabledReason;
+          panel.append(notice);
+        }
         const buttons: HTMLElement[] = [];
-        if (result.updateAvailable && result.installationAvailable) {
+        if (
+          result.updateAvailable &&
+          result.installationAvailable &&
+          !result.installationDisabledReason
+        ) {
           const update = document.createElement("button");
           update.type = "button";
           update.className = "settings-command-button";

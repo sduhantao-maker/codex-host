@@ -5,6 +5,7 @@ import type {
   UpdateStatusResult,
 } from "@codexhost/shared-contracts";
 import {
+  UPDATE_INSTALLATION_DISABLED_REASON,
   acquireUpdateOperationLock,
   cleanupTerminalUpdateState,
   compareSemanticVersions,
@@ -114,6 +115,42 @@ export function createHostUpdateCoordinator(
 
   return Object.freeze({
     async check(signal?: AbortSignal): Promise<UpdateCheckResult> {
+      if (UPDATE_INSTALLATION_DISABLED_REASON) {
+        const runtime = await readRuntimeMetadata(
+          options.hostRuntimePath,
+          options.environment,
+        ).catch(() => null);
+        let installation: UpdateCheckResult["installation"] = null;
+        if (runtime?.distribution === "npm") installation = "npm";
+        else if (runtime?.distribution === "installer") {
+          if (platform === "darwin") installation = "macos-dmg";
+          else if (platform === "win32") installation = "windows-installer";
+        }
+        const result: UpdateCheckResult = {
+          currentVersion: runtime?.version ?? "0.0.0",
+          installation,
+          latestVersion: null,
+          updateAvailable: false,
+          installationAvailable: false,
+          installationDisabledReason: UPDATE_INSTALLATION_DISABLED_REASON,
+          releaseNotes: null,
+          releaseNotesUrl: null,
+          status: null,
+          error: null,
+        };
+        try {
+          const release = await fetchLatest(signal);
+          return {
+            ...result,
+            latestVersion: release.version,
+            updateAvailable: compareSemanticVersions(result.currentVersion, release.version) < 0,
+            releaseNotes: release.releaseNotes,
+            releaseNotesUrl: release.releaseNotesUrl,
+          };
+        } catch (error) {
+          return { ...result, error: boundedError(error) };
+        }
+      }
       let context: InstalledUpdateContext;
       try {
         context = await installedContext();
@@ -177,6 +214,9 @@ export function createHostUpdateCoordinator(
     },
 
     async start(): Promise<UpdateStartResult> {
+      if (UPDATE_INSTALLATION_DISABLED_REASON) {
+        throw new Error(UPDATE_INSTALLATION_DISABLED_REASON);
+      }
       const context = await installedContext();
       await recoverUpdateOperationLock(context.common.stateDirectory);
       const lock = await acquireUpdateOperationLock(context.common.stateDirectory);
