@@ -163,6 +163,7 @@
 | [`NOTICE.md`](NOTICE.md) | Web 控制台打开或刷新时读取的项目公告，含显示开关、标题、类型与正文；默认关闭，发布规则见控制台文档。 |
 | [`operations/repository-maintenance.md`](operations/repository-maintenance.md) | PR 标签、CI 评论和发布前检查自动化；修改仓库自动化时阅读。 |
 | [`operations/personal-fork-maintenance.md`](operations/personal-fork-maintenance.md) | 个人 stable 线的受控安装、同版本远程重启、全量检查及 DMG 切换边界；维护个人日常候选时阅读。 |
+| [`personal/requirements.md`](personal/requirements.md) | 官方基座加个人补丁栈的需求对照、快速检查和升级工具用法。 |
 
 ## 待评估方案与问题调查
 
