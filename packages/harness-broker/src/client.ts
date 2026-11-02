@@ -68,6 +68,7 @@ import {
   type HarnessBrokerMethod,
 } from "./protocol.js";
 import {
+  activeForkBoundarySchema,
   harnessErrorSchema,
   harnessOutputSchema,
   harnessSessionStateSchema,
@@ -78,6 +79,7 @@ interface SessionMetadata {
   sessionGeneration: number;
   capabilities: HarnessSessionCapabilities;
   readCapabilities: boolean;
+  captureActiveForkBoundary: boolean;
   initialState: HarnessSessionState;
   initialUsage: HostUsage | null;
   commands: boolean;
@@ -156,6 +158,7 @@ function parseSessionMetadata(value: unknown): SessionMetadata {
     sessionGeneration: candidate.sessionGeneration,
     capabilities: harnessSessionCapabilitiesSchema.parse(candidate.capabilities),
     readCapabilities: candidate.readCapabilities === true,
+    captureActiveForkBoundary: candidate.captureActiveForkBoundary === true,
     initialState: state,
     initialUsage: candidate.initialUsage === null ? null : parseHostUsage(candidate.initialUsage),
     commands: candidate.commands === true,
@@ -464,6 +467,7 @@ class BrokeredHarnessSession implements HarnessSession {
   readonly #channel = new HarnessOutputChannel<HarnessOutput>();
   #connection: BrokerConnection;
   readonly commands?: HarnessCommandCapability;
+  readonly captureActiveForkBoundary?: NonNullable<HarnessSession["captureActiveForkBoundary"]>;
   #metadata: SessionMetadata;
   #faulted = false;
   #closed = false;
@@ -485,6 +489,9 @@ class BrokeredHarnessSession implements HarnessSession {
     this.#metadata = metadata;
     this.#state = structuredClone(metadata.initialState);
     this.outputs = this.#channel.outputs;
+    if (metadata.captureActiveForkBoundary) {
+      this.captureActiveForkBoundary = () => this.#captureActiveForkBoundary();
+    }
     if (metadata.commands) {
       this.commands = {
         list: async () => {
@@ -561,6 +568,31 @@ class BrokeredHarnessSession implements HarnessSession {
 
   async refreshUsage(): Promise<void> {
     await this.#request("session.refreshUsage", {});
+  }
+  async #captureActiveForkBoundary(): ReturnType<
+    NonNullable<HarnessSession["captureActiveForkBoundary"]>
+  > {
+    if (!this.#metadata.captureActiveForkBoundary)
+      return { ok: false, error: unavailable("Active Fork capture is unavailable", false) };
+    try {
+      const result = parseHarnessResult(
+        await this.#request("session.captureActiveForkBoundary", {}),
+      );
+      if (!result.ok) return result;
+      const value = activeForkBoundarySchema.parse(result.value);
+      if (
+        value.checkpoint.harnessId !== this.harnessId ||
+        value.checkpoint.nativeSessionId !== this.#state.nativeRef?.nativeSessionId
+      ) {
+        throw new Error("Broker Fork boundary belongs to another Session");
+      }
+      return { ok: true, value };
+    } catch (error) {
+      return {
+        ok: false,
+        error: unavailable(error instanceof Error ? error.message : String(error)),
+      };
+    }
   }
   async readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
     if (this.#closed)

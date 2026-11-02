@@ -3,7 +3,12 @@ import path from "node:path";
 import { homedir } from "node:os";
 import type { JsonObject, JsonRpcRequest } from "@codexhost/protocol-core";
 import { classifyCreateRequestRoute } from "./app-server-host.js";
-import { threadOwnershipListResultSchema } from "@codexhost/shared-contracts";
+import {
+  SIDE_CHAT_LIST_METHOD,
+  sideChatListResultSchema,
+  threadOwnershipListResultSchema,
+  type SideChatLibraryItem,
+} from "@codexhost/shared-contracts";
 import {
   storedSectionPlacementV1Schema,
   type StoredSectionPlacementV1,
@@ -139,10 +144,10 @@ export class SharedThreadBridge {
     const params = object(request.params) ? request.params : {};
     const create = this.options.delegateCreates ? classifyCreateRequestRoute(request) : null;
     let shared = create !== null && create.selectedHarness !== "codex";
-    if (!shared && typeof params.threadId === "string") {
-      shared =
-        this.#known.has(params.threadId) ||
-        (await this.ownership([params.threadId])).has(params.threadId);
+    const threadId =
+      request.method === SIDE_CHAT_LIST_METHOD ? params.sourceThreadId : params.threadId;
+    if (!shared && typeof threadId === "string") {
+      shared = this.#known.has(threadId) || (await this.ownership([threadId])).has(threadId);
     }
     if (!shared) return null;
     const peer = await this.#connect();
@@ -183,6 +188,13 @@ export class SharedThreadBridge {
           params.sortKey === "section_position" ? { ...params, sortKey: "updated_at" } : params,
         )
       : [];
+  }
+
+  async sideChats(params: JsonObject): Promise<SideChatLibraryItem[]> {
+    const peer = await this.#connect();
+    if (!peer) return [];
+    const response = await peer.request(SIDE_CHAT_LIST_METHOD, params);
+    return sideChatListResultSchema.parse(response.result).items;
   }
 
   async placements(): Promise<StoredSectionPlacementV1[]> {

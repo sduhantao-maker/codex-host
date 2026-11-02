@@ -55,7 +55,21 @@ const storedThreadCoreV1Shape = {
   archived: z.boolean(),
   transportModelId: nonBlankTextSchema.max(1_024),
   ephemeral: z.boolean(),
+  pendingInjectedText: z.array(z.string()).optional(),
+  sideChatInheritedTurns: z.number().int().nonnegative().optional(),
+  sideChatFirstPrompt: z
+    .object({ turnId: hostTurnIdSchema, preview: z.string().max(80) })
+    .strict()
+    .optional(),
   historyMode: z.enum(["legacy", "paginated"]),
+  attachedToThreadId: storedHostThreadIdSchema.optional(),
+  sideChatOrigin: z
+    .object({
+      threadId: storedHostThreadIdSchema,
+      projectId: nonBlankTextSchema.max(1_024).optional(),
+    })
+    .strict()
+    .optional(),
   forkSource: z
     .object({
       hostThreadId: hostThreadIdSchema,
@@ -252,6 +266,8 @@ export interface CreateProvisionalThreadInput {
   transportModelId: string;
   ephemeral: boolean;
   historyMode: "legacy" | "paginated";
+  attachedToThreadId?: HostThreadId;
+  sideChatOrigin?: { threadId: HostThreadId; projectId?: string };
   forkSource?: { hostThreadId: HostThreadId; hostTurnId: HostTurnId };
   subagent?: {
     parentHostThreadId: HostThreadId;
@@ -264,6 +280,7 @@ export interface CommitReadyThreadInput {
   hostThreadId: HostThreadId;
   nativeSessionRef: NativeSessionRef;
   turnMappings?: StoredTurnMappingV1[];
+  sideChatInheritedTurns?: number;
 }
 
 /** Preserve a retained native child's Host identity after its parent Session is replaced. */

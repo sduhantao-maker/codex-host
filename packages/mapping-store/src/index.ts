@@ -29,6 +29,8 @@ export { storedSectionPlacementV1Schema } from "./section-placements.js";
 export { SUPERSEDED_SESSIONS_MAX } from "./superseded-sessions.js";
 export type { StoredSupersededSessionV1 } from "./superseded-sessions.js";
 export type { StoredSectionPlacementV1, StoredThreadSection } from "./section-placements.js";
+export { storedSideChatCollectionEntrySchema } from "./side-chat-collection.js";
+export type { StoredSideChatCollectionEntry } from "./side-chat-collection.js";
 
 export const packageMetadata = {
   name: "@codexhost/mapping-store",

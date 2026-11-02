@@ -1,11 +1,11 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { FakeHarnessAdapter } from "@codexhost/harness-adapter/testing";
 import { MappingStore } from "@codexhost/mapping-store";
-import { harnessIdSchema } from "@codexhost/shared-contracts";
+import { harnessIdSchema, hostThreadIdSchema } from "@codexhost/shared-contracts";
 import type { JsonObject } from "@codexhost/protocol-core";
 import { AppServerHost } from "../src/app-server-host.js";
 import { SharedThreadOwner } from "../src/shared-thread-owner.js";
@@ -24,6 +24,7 @@ import {
   startExternalThread,
   startPiThread,
   startPiTurn,
+  turnEvent,
   writeRequest,
 } from "./app-server-host-fixture.js";
 
@@ -38,8 +39,15 @@ function session(adapter: FakeHarnessAdapter) {
   return value;
 }
 
-function setup() {
+function setup(sideChatFeatures = false) {
   const directory = mkdtempSync(path.join(tmpdir(), "shared-threads-"));
+  const features = {
+    persistentSideChats: true,
+    sideChatLibrary: true,
+    claudeActiveSideChatFork: true,
+  };
+  if (sideChatFeatures)
+    writeFileSync(path.join(directory, "sidechat-features.json"), JSON.stringify(features));
   const owner = new SharedThreadOwner();
   const adapter = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
   const open = vi.spyOn(adapter, "open");
@@ -53,6 +61,7 @@ function setup() {
     desktopOutput: owner.output,
     diagnosticOutput,
     mappingStore: store,
+    ...(sideChatFeatures ? { environment: { CODEXHOST_DATA_DIR: directory } } : {}),
     externalAdapters: new Map([["pi", adapter]]),
   });
   const running = host.run();
@@ -65,10 +74,15 @@ function setup() {
   });
   function front(delegateCreates: boolean, connect = async () => owner.connect()) {
     const bridge = new SharedThreadBridge({ connect, delegateCreates, diagnose: () => undefined });
-    const fixture = createFixture({ sharedThreads: bridge });
+    const fixture = createFixture({
+      sharedThreads: bridge,
+      ...(sideChatFeatures ? { sideChatFeatures: features } : {}),
+    });
     const official = new JsonLineCollector(fixture.official.stdin);
+    const nativeRequests: JsonObject[] = [];
     fixture.official.stdin.on("data", () => {
       for (const request of official.messages.splice(0)) {
+        nativeRequests.push(request);
         fixture.official.stdout.write(
           `${JSON.stringify({
             id: request.id,
@@ -82,9 +96,9 @@ function setup() {
       await fixture.running;
       rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
     });
-    return fixture;
+    return { ...fixture, nativeRequests };
   }
-  return { owner, adapter, open, front, host, directory, diagnosticOutput };
+  return { owner, adapter, open, front, host, directory, diagnosticOutput, store };
 }
 
 async function rpc(
@@ -98,6 +112,87 @@ async function rpc(
 }
 
 describe("shared external Threads", () => {
+  it("collects local and shared side chats in their owning stores without sending their IDs to Codex", async () => {
+    const { front, adapter, store } = setup(true);
+    const ssh = front(true);
+    const desktop = front(false);
+    const sharedParent = await startPiThread(ssh);
+    const sharedTurn = await startPiTurn(ssh, sharedParent, 2);
+    session(adapter).succeedTurn();
+    await ssh.collector.waitFor((message) => turnEvent(message, "turn/completed", sharedTurn));
+    const localParent = await startPiThread(desktop);
+    const localTurn = await startPiTurn(desktop, localParent, 2);
+    session(desktop.adapter).succeedTurn();
+    await desktop.collector.waitFor((message) => turnEvent(message, "turn/completed", localTurn));
+    const parentsBefore = [
+      await store.getThread(hostThreadIdSchema.parse(sharedParent)),
+      await desktop.mappingStore.getThread(hostThreadIdSchema.parse(localParent)),
+    ];
+    const historiesBefore = [
+      session(adapter).persistedSnapshot(),
+      session(desktop.adapter).persistedSnapshot(),
+    ];
+    const fork = async (threadId: string, request: number): Promise<string> => {
+      const response = await rpc(desktop, request, "thread/fork", {
+        threadId,
+        attachToSource: true,
+      });
+      const child = (response.result as JsonObject)?.thread as JsonObject;
+      expect(typeof child?.id).toBe("string");
+      return String(child.id);
+    };
+    const sharedChild = await fork(sharedParent, 10);
+    const localChild = await fork(localParent, 11);
+    for (const [request, threadId] of [
+      [12, sharedChild],
+      [13, localChild],
+    ] as const)
+      expect(
+        await rpc(desktop, request, "codexhost/sideChat/update", { threadId, collected: true }),
+      ).toMatchObject({ result: { item: { threadId, collected: true } } });
+    expect((await store.listSideChatCollection()).map((entry) => entry.threadId)).toEqual([
+      sharedChild,
+    ]);
+    expect(
+      (await desktop.mappingStore.listSideChatCollection()).map((entry) => entry.threadId),
+    ).toEqual([localChild]);
+    for (const [request, sourceThreadId, child] of [
+      [14, sharedParent, sharedChild],
+      [15, localParent, localChild],
+    ] as const)
+      expect(
+        await rpc(desktop, request, "codexhost/sideChat/list", { sourceThreadId }),
+      ).toMatchObject({
+        result: { items: [{ threadId: child, sourceThreadId, collected: true }] },
+      });
+    const combined = await rpc(desktop, 16, "codexhost/sideChat/list", { collected: true });
+    expect(
+      ((combined.result as JsonObject).items as JsonObject[]).map((entry) => entry.threadId).sort(),
+    ).toEqual([localChild, sharedChild].sort());
+    expect(
+      await rpc(desktop, 17, "codexhost/sideChat/update", {
+        threadId: sharedChild,
+        collected: false,
+      }),
+    ).toMatchObject({ result: { item: { threadId: sharedChild, collected: false } } });
+    expect((await store.listSideChatCollection())[0]?.collectedAt).toBeUndefined();
+    expect((await desktop.mappingStore.listSideChatCollection())[0]?.collectedAt).toBeDefined();
+    expect([
+      await store.getThread(hostThreadIdSchema.parse(sharedParent)),
+      await desktop.mappingStore.getThread(hostThreadIdSchema.parse(localParent)),
+    ]).toEqual(parentsBefore);
+    expect([
+      session(adapter).persistedSnapshot(),
+      session(desktop.adapter).persistedSnapshot(),
+    ]).toEqual(historiesBefore);
+    const owned = new Set([sharedParent, localParent, sharedChild, localChild]);
+    expect(
+      desktop.nativeRequests.some((message) =>
+        owned.has(String((message.params as JsonObject)?.threadId)),
+      ),
+    ).toBe(false);
+  });
+
   it.each(["submit", "discard"])(
     "keeps SSH prewarms out of every viewer's history until used (%s)",
     async (action) => {

@@ -7,7 +7,7 @@ import type {
   ThreadListSortKey,
 } from "@codexhost/protocol-core";
 
-import { externalThreadValue } from "./external-thread-repository.js";
+import { externalThreadValue, storedSideChatPreview } from "./external-thread-repository.js";
 
 export interface ExternalThreadListRuntimeState {
   running: boolean;
@@ -110,6 +110,11 @@ function includesExternalRecord(
     current = parent;
   }
   const sourceKind = record.subagent ? "subAgentThreadSpawn" : "vscode";
+  if (typeof query.attachedToThreadId === "string") {
+    if (record.attachedToThreadId !== query.attachedToThreadId) return false;
+  } else if (query.hideSideChats && !query.archived && record.attachedToThreadId) {
+    return false;
+  }
   const scoped = query.parentThreadId !== null || query.ancestorThreadId !== null;
   if (
     record.subagent &&
@@ -149,13 +154,24 @@ function includesExternalRecord(
   }
   if (
     query.searchTerm !== null &&
-    !record.title.toLowerCase().includes(query.searchTerm.toLowerCase())
+    !record.title.toLowerCase().includes(query.searchTerm.toLowerCase()) &&
+    !archivedSideChatPreview(record, query)?.toLowerCase().includes(query.searchTerm.toLowerCase())
   ) {
     return false;
   }
   if (query.isPinned === true) return false;
   if (query.sectionId !== undefined && query.sectionId !== sectionId) return false;
   return true;
+}
+
+function archivedSideChatPreview(
+  record: StoredThreadRecordV1,
+  query: DecodedThreadListRequest,
+): string | undefined {
+  // Desktop's managed-worktree archive check searches by the metadata-read preview.
+  return query.hideSideChats && record.archived && record.sideChatOrigin
+    ? (storedSideChatPreview(record) ?? "")
+    : undefined;
 }
 
 export function resolveExternalSessionTreeIds(
@@ -225,9 +241,13 @@ export function externalThreadListEntries(input: ExternalThreadListInput): Threa
         record,
         turns: [],
         sessionId,
+        includeSideChatMetadata:
+          input.query.hideSideChats === true || typeof input.query.attachedToThreadId === "string",
         ...(runtime ? { running: runtime.running } : { loaded: false }),
         ...(placement ? { placement } : {}),
       });
+      const preview = archivedSideChatPreview(record, input.query);
+      if (preview !== undefined) thread.preview = preview;
       return {
         source: "external",
         thread,

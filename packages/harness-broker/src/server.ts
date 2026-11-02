@@ -185,6 +185,7 @@ function sessionMetadata(record: ServerSession): object {
     sessionGeneration: record.generation,
     capabilities: record.session.capabilities,
     readCapabilities: true,
+    captureActiveForkBoundary: record.session.captureActiveForkBoundary !== undefined,
     initialState: {
       ...initialState,
       ...(record.nativeRef ? { nativeRef: record.nativeRef } : {}),
@@ -863,6 +864,22 @@ export async function startHarnessBrokerServer(input: {
       if (request.method === "session.readSnapshot") {
         return requireSession(request.params).session.readSnapshot();
       }
+      if (request.method === "session.captureActiveForkBoundary") {
+        const session = requireSession(request.params).session;
+        const result = session.captureActiveForkBoundary
+          ? await session.captureActiveForkBoundary()
+          : {
+              ok: false,
+              error: {
+                code: "unsupported",
+                message: "Active Fork capture is unavailable",
+                retryable: false,
+              },
+            };
+        if (requireSession(request.params).session !== session)
+          throw new Error("Harness broker Session generation is stale");
+        return result;
+      }
       if (request.method === "session.refreshUsage") {
         const record = requireSession(request.params);
         const refreshUsage = (
@@ -998,6 +1015,11 @@ export async function startHarnessBrokerServer(input: {
           socket.destroy();
           return;
         }
+        let detached = false;
+        const settled = (): void => {
+          state.queuedFrames -= 1;
+          scheduleIdle();
+        };
         state.queue = state.queue
           .then(async () => {
             if (state.closed) return;
@@ -1037,21 +1059,29 @@ export async function startHarnessBrokerServer(input: {
               });
               return;
             }
-            try {
-              await respond(parsed.data, { ok: true, value: await handleRequest(parsed.data) });
-            } catch (error) {
-              await respond(parsed.data, {
-                ok: false,
-                error: protocolError(error instanceof Error ? error.message : String(error)),
-              });
-            } finally {
-              // One authenticated connection intentionally serializes requests. This bounds
-              // native Harness concurrency at one while the client bounds queued requests.
+            const request = parsed.data;
+            const reply = async (): Promise<void> => {
+              try {
+                await respond(request, { ok: true, value: await handleRequest(request) });
+              } catch (error) {
+                await respond(request, {
+                  ok: false,
+                  error: protocolError(error instanceof Error ? error.message : String(error)),
+                });
+              }
+            };
+            if (request.method === "session.captureActiveForkBoundary") {
+              // Only the read-only Fork capture may run alongside parent commands.
+              detached = true;
+              void reply()
+                .finally(settled)
+                .catch(() => socket.destroy());
+              return;
             }
+            await reply();
           })
           .finally(() => {
-            state.queuedFrames -= 1;
-            scheduleIdle();
+            if (!detached) settled();
           })
           .catch(() => {
             socket.destroy();

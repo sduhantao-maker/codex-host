@@ -15,6 +15,7 @@ import {
   type ReplaceReadySessionInput,
   type StoredDelegationRecordV1,
   type StoredSectionPlacementV1,
+  type StoredSideChatCollectionEntry,
   type StoredThreadRecordV1,
   type StoredTurnMappingV1,
   type ThreadMetadataPatch,
@@ -36,6 +37,12 @@ import {
 
 export interface ExternalThreadStore {
   initialize(): Promise<void>;
+  listSideChatCollection(): Promise<StoredSideChatCollectionEntry[]>;
+  registerSideChatOrigin(entry: StoredSideChatCollectionEntry): Promise<void>;
+  setSideChatCollected(
+    threadId: HostThreadId,
+    entry: StoredSideChatCollectionEntry | null,
+  ): Promise<void>;
   getThread(hostThreadId: HostThreadId): Promise<StoredThreadRecordV1 | null>;
   listThreads(): Promise<StoredThreadRecordV1[]>;
   getThreadByCreateRequest(createRequestId: string): Promise<StoredThreadRecordV1 | null>;
@@ -62,6 +69,7 @@ export interface ExternalThreadStore {
   upsertTurnMappings(
     hostThreadId: HostThreadId,
     mappings: StoredTurnMappingV1[],
+    sideChatFirstPrompt?: StoredThreadRecordV1["sideChatFirstPrompt"],
   ): Promise<StoredThreadRecordV1>;
   reconcileTurnMappings(
     hostThreadId: HostThreadId,
@@ -73,6 +81,10 @@ export interface ExternalThreadStore {
     transportModelId: string,
   ): Promise<StoredThreadRecordV1>;
   setArchived(hostThreadId: HostThreadId, archived: boolean): Promise<StoredThreadRecordV1>;
+  setPendingInjectedText(
+    hostThreadId: HostThreadId,
+    texts: readonly string[],
+  ): Promise<StoredThreadRecordV1>;
   updateMetadata(
     hostThreadId: HostThreadId,
     patch: ThreadMetadataPatch,
@@ -119,6 +131,21 @@ export class ExternalThreadRepository {
 
   initialize(): Promise<void> {
     return this.store.initialize();
+  }
+
+  listSideChatCollection(): Promise<StoredSideChatCollectionEntry[]> {
+    return this.store.listSideChatCollection();
+  }
+
+  registerSideChatOrigin(entry: StoredSideChatCollectionEntry): Promise<void> {
+    return this.store.registerSideChatOrigin(entry);
+  }
+
+  setSideChatCollected(
+    threadId: HostThreadId,
+    entry: StoredSideChatCollectionEntry | null,
+  ): Promise<void> {
+    return this.store.setSideChatCollected(threadId, entry);
   }
 
   close(): Promise<void> {
@@ -219,6 +246,13 @@ export class ExternalThreadRepository {
     return this.store.setArchived(hostThreadId, archived);
   }
 
+  setPendingInjectedText(
+    hostThreadId: HostThreadId,
+    texts: readonly string[],
+  ): Promise<StoredThreadRecordV1> {
+    return this.store.setPendingInjectedText(hostThreadId, texts);
+  }
+
   updateMetadata(
     hostThreadId: HostThreadId,
     patch: ThreadMetadataPatch,
@@ -240,6 +274,7 @@ export class ExternalThreadRepository {
     hostTurnId: StoredTurnMappingV1["hostTurnId"],
     nativeTurnRef: NativeTurnRef,
     nativeCheckpointRef?: NativeCheckpointRef,
+    sideChatFirstPrompt?: StoredThreadRecordV1["sideChatFirstPrompt"],
   ): Promise<StoredThreadRecordV1> {
     if (
       record.state !== "ready" ||
@@ -252,13 +287,11 @@ export class ExternalThreadRepository {
     ) {
       throw new Error("Live Turn identity does not belong to the stored Thread");
     }
-    return this.store.upsertTurnMappings(record.hostThreadId, [
-      {
-        hostTurnId,
-        nativeTurnRef,
-        ...(nativeCheckpointRef ? { nativeCheckpointRef } : {}),
-      },
-    ]);
+    return this.store.upsertTurnMappings(
+      record.hostThreadId,
+      [{ hostTurnId, nativeTurnRef, ...(nativeCheckpointRef ? { nativeCheckpointRef } : {}) }],
+      sideChatFirstPrompt,
+    );
   }
 
   async commitDerivedSnapshot(
@@ -289,6 +322,7 @@ export class ExternalThreadRepository {
       hostThreadId: record.hostThreadId,
       nativeSessionRef,
       turnMappings: mappings,
+      ...(record.sideChatOrigin ? { sideChatInheritedTurns: mappings.length } : {}),
     });
     return {
       record: nextRecord,
@@ -507,6 +541,8 @@ export function createExternalThreadRecordInput(input: {
   transportModelId: string;
   ephemeral: boolean;
   historyMode: "legacy" | "paginated";
+  attachedToThreadId?: CreateProvisionalThreadInput["attachedToThreadId"];
+  sideChatOrigin?: CreateProvisionalThreadInput["sideChatOrigin"];
   forkSource?: CreateProvisionalThreadInput["forkSource"];
   subagent?: CreateProvisionalThreadInput["subagent"];
 }): CreateProvisionalThreadInput {
@@ -519,6 +555,8 @@ export function createExternalThreadRecordInput(input: {
     transportModelId: input.transportModelId,
     ephemeral: input.ephemeral,
     historyMode: input.historyMode,
+    ...(input.attachedToThreadId ? { attachedToThreadId: input.attachedToThreadId } : {}),
+    ...(input.sideChatOrigin ? { sideChatOrigin: input.sideChatOrigin } : {}),
     ...(input.forkSource ? { forkSource: input.forkSource } : {}),
     ...(input.subagent ? { subagent: input.subagent } : {}),
   };
@@ -537,6 +575,13 @@ export function threadSectionFields(placement?: StoredSectionPlacementV1): {
     : { section: null, sectionEnteredAt: null };
 }
 
+export function storedSideChatPreview(record: StoredThreadRecordV1): string | undefined {
+  const first = record.sideChatFirstPrompt;
+  if (first && record.turnMappings.some((mapping) => mapping.hostTurnId === first.turnId))
+    return first.preview;
+  return undefined;
+}
+
 export function externalThreadValue(input: {
   record: StoredThreadRecordV1;
   turns: JsonObject[];
@@ -544,6 +589,7 @@ export function externalThreadValue(input: {
   running?: boolean;
   loaded?: boolean;
   placement?: StoredSectionPlacementV1;
+  includeSideChatMetadata?: boolean;
 }): JsonObject {
   const { record } = input;
   const createdAt = Math.floor(Date.parse(record.createdAt) / 1_000);
@@ -614,6 +660,22 @@ export function externalThreadValue(input: {
         }
       : null,
     forkedFromId: record.forkSource?.hostThreadId ?? null,
+    ...(input.includeSideChatMetadata
+      ? {
+          attachedToThreadId: record.attachedToThreadId ?? null,
+          codexhostArchived: record.archived,
+        }
+      : {}),
+    ...(input.includeSideChatMetadata && record.sideChatOrigin
+      ? {
+          codexhostSideChatOrigin: {
+            threadId: record.sideChatOrigin.threadId,
+            ...(record.sideChatOrigin.projectId
+              ? { projectId: record.sideChatOrigin.projectId }
+              : {}),
+          },
+        }
+      : {}),
     parentThreadId: record.subagent?.parentHostThreadId ?? null,
     ephemeral: record.ephemeral,
     canAcceptDirectInput: record.subagent ? false : input.loaded === false ? null : true,

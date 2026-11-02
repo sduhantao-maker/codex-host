@@ -198,5 +198,25 @@ describe("Claude transcript reader", () => {
         items: [{ item: { type: "agentMessage", text: "second response" } }],
       },
     ]);
+    const activeTranscript = await readClaudeTranscript({
+      cwd,
+      environment: { CLAUDE_CONFIG_DIR: configDirectory },
+      sessionId: "session-1",
+      includeControlRecords: true,
+    });
+    expect(activeTranscript).toHaveLength(5);
+    expect(activeTranscript?.[2]).toEqual({
+      type: "system",
+      uuid: "system-1",
+      parentUuid: "user-1",
+      session_id: "session-1",
+    });
+    expect(
+      await readClaudeTranscript({
+        cwd,
+        environment: { CLAUDE_CONFIG_DIR: configDirectory },
+        sessionId: "session-1",
+      }),
+    ).toEqual(transcript);
   });
 });

@@ -61,6 +61,8 @@ export async function readClaudeTranscript(input: {
   cwd: string;
   environment: NodeJS.ProcessEnv;
   sessionId: string;
+  /** Active-side-chat validation needs system parent links; ordinary history remains unchanged. */
+  includeControlRecords?: boolean;
 }): Promise<unknown[] | null> {
   const transcript = await findClaudeTranscript(input);
   if (!transcript) return null;
@@ -76,9 +78,9 @@ export async function readClaudeTranscript(input: {
     }
     if (
       !isRecord(entry) ||
-      (entry.type !== "user" && entry.type !== "assistant") ||
       typeof entry.uuid !== "string" ||
-      !isRecord(entry.message)
+      (!input.includeControlRecords &&
+        ((entry.type !== "user" && entry.type !== "assistant") || !isRecord(entry.message)))
     ) {
       continue;
     }

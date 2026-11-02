@@ -15,7 +15,7 @@ function deferred() {
   return { promise, resolve };
 }
 
-async function fixture() {
+async function fixture(persistentSideChats = false) {
   const adapter = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
   const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
   if (!opened.ok) throw new Error(opened.error.message);
@@ -53,6 +53,7 @@ async function fixture() {
   const runtime = new ExternalThreadRuntime({
     adapters: new Map([["pi", adapter]]),
     repository,
+    persistentSideChats: () => persistentSideChats,
     consumeOutputs: async (thread) => {
       for await (const output of thread.session.outputs) void output;
     },
@@ -169,6 +170,23 @@ describe("external Thread idle release", () => {
     expect(restored.kind).toBe("external");
     if (restored.kind !== "external") throw new Error("Not restored");
     expect(restored.thread.steeredTurnIds).toEqual(new Set([turnId]));
+    f.idle.stop();
+    await restored.thread.session.close();
+  });
+
+  it("restores durable Side Chat context after releasing an idle Session", async () => {
+    const f = await fixture(true);
+    f.thread.record.pendingInjectedText = ["Durable side context."];
+    f.thread.pendingInjectedText = ["Durable side context."];
+    f.idle.configure({ enabled: true, timeoutMinutes: 10 });
+
+    await vi.advanceTimersByTimeAsync(10 * MINUTE);
+    expect(f.runtime.get(f.id)).toBeUndefined();
+    const restored = await f.runtime.resolve(f.id);
+
+    expect(restored.kind).toBe("external");
+    if (restored.kind !== "external") throw new Error("Not restored");
+    expect(restored.thread.pendingInjectedText).toEqual(["Durable side context."]);
     f.idle.stop();
     await restored.thread.session.close();
   });
