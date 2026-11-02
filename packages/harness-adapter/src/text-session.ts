@@ -611,6 +611,10 @@ export interface HarnessSession {
   hasBackgroundWork?(): boolean;
   /** Stops every running detached Item; each still settles through its own events. */
   stopBackgroundWork?(): Promise<HarnessResult<void>>;
+  /** Read-only native boundary for forking a running Turn; never interrupts or completes it. */
+  captureActiveForkBoundary?(): Promise<
+    HarnessResult<{ turnId: HostTurnId; checkpoint: NativeCheckpointRef }>
+  >;
   readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>>;
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
   execute(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>>;

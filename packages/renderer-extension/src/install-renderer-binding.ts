@@ -4,6 +4,7 @@ import {
   type RendererBindingProbeApi,
 } from "./renderer-binding-probe.js";
 import { installCurrentRendererAdapter } from "./versioned-renderer-adapter.js";
+import { installRendererSideChatFeatures } from "./renderer-sidechat-features.js";
 
 export function installRendererBinding(
   enabledAgents?: readonly RendererAgent[],
@@ -24,6 +25,26 @@ export function installRendererBinding(
       modelUpdates: 0,
       hook: null,
     });
+  }
+  try {
+    const sideChats = installRendererSideChatFeatures(
+      document,
+      () => window.__codexhostHostRoutingV1,
+    );
+    const disposeBinding = binding.dispose.bind(binding);
+    binding.dispose = () => {
+      try {
+        sideChats.dispose();
+      } catch {
+        /* Optional cleanup cannot stop the original binding. */
+      }
+      disposeBinding();
+    };
+  } catch (error) {
+    console.error(
+      "codexhost optional side chat installation failed",
+      error instanceof Error ? error.name : "UnknownError",
+    );
   }
   return binding;
 }

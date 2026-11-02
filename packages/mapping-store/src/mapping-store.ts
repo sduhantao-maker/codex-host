@@ -50,6 +50,12 @@ import {
   writeSupersededSessionsFile,
   type StoredSupersededSessionV1,
 } from "./superseded-sessions.js";
+import {
+  readSideChatCollectionFile,
+  storedSideChatCollectionEntrySchema,
+  writeSideChatCollectionFile,
+  type StoredSideChatCollectionEntry,
+} from "./side-chat-collection.js";
 
 export type MappingStoreErrorCode =
   | "STORE_LOCKED"
@@ -676,6 +682,8 @@ export class MappingStore {
         transportModelId: input.transportModelId,
         ephemeral: input.ephemeral,
         historyMode: input.historyMode,
+        ...(input.attachedToThreadId ? { attachedToThreadId: input.attachedToThreadId } : {}),
+        ...(input.sideChatOrigin ? { sideChatOrigin: input.sideChatOrigin } : {}),
         ...(input.forkSource ? { forkSource: input.forkSource } : {}),
         ...(input.subagent ? { subagent: input.subagent } : {}),
         turnMappings: [],
@@ -695,6 +703,9 @@ export class MappingStore {
       state: "ready",
       nativeSessionRef: input.nativeSessionRef,
       turnMappings: this.#mergeMappings(current.turnMappings, input.turnMappings ?? []),
+      ...(input.sideChatInheritedTurns === undefined
+        ? {}
+        : { sideChatInheritedTurns: input.sideChatInheritedTurns }),
     }));
   }
 
@@ -818,10 +829,12 @@ export class MappingStore {
   async upsertTurnMappings(
     hostThreadId: HostThreadId,
     mappings: StoredTurnMappingV1[],
+    sideChatFirstPrompt?: StoredThreadRecordV1["sideChatFirstPrompt"],
   ): Promise<StoredThreadRecordV1> {
     return this.#update(hostThreadId, (current) => ({
       ...current,
       turnMappings: this.#mergeMappings(current.turnMappings, mappings),
+      ...(sideChatFirstPrompt ? { sideChatFirstPrompt } : {}),
     }));
   }
 
@@ -891,6 +904,18 @@ export class MappingStore {
     );
   }
 
+  async setPendingInjectedText(
+    hostThreadId: HostThreadId,
+    texts: readonly string[],
+  ): Promise<StoredThreadRecordV1> {
+    const pendingInjectedText = [...texts];
+    return this.#update(hostThreadId, (current) =>
+      sameJson(current.pendingInjectedText ?? [], pendingInjectedText)
+        ? null
+        : { ...current, pendingInjectedText },
+    );
+  }
+
   /**
    * Patch Desktop metadata. With `ifProjectId`, the patch applies only while the
    * stored assignment still equals it; otherwise the current record is returned.
@@ -906,6 +931,59 @@ export class MappingStore {
       }
       const next = applyThreadMetadataPatch(current, patch);
       return sameJson(next, current) ? null : next;
+    });
+  }
+
+  async listSideChatCollection(): Promise<StoredSideChatCollectionEntry[]> {
+    this.#requireInitialized();
+    await this.#writeTail;
+    return cloneRecord((await readSideChatCollectionFile(this.#sideChatCollectionPath)).entries);
+  }
+
+  async setSideChatCollected(
+    threadId: HostThreadId,
+    entry: StoredSideChatCollectionEntry | null,
+  ): Promise<void> {
+    this.#requireInitialized();
+    const parsed = entry === null ? null : storedSideChatCollectionEntrySchema.parse(entry);
+    if (parsed && parsed.threadId !== threadId) {
+      throw new MappingStoreError("INVALID_RECORD", "Side chat collection identity does not match");
+    }
+    await this.#enqueue(async () => {
+      const file = await readSideChatCollectionFile(this.#sideChatCollectionPath);
+      const previous = file.entries.find((item) => item.threadId === threadId);
+      const entries = file.entries.filter((item) => item.threadId !== threadId);
+      if (parsed && previous && parsed.sourceThreadId !== previous.sourceThreadId) {
+        throw new MappingStoreError("MAPPING_CONFLICT", "Side chat source cannot be reassigned");
+      }
+      const retained = previous ? { ...previous } : undefined;
+      if (retained) delete retained.collectedAt;
+      if (parsed) entries.push({ ...retained, ...parsed });
+      else if (retained?.registeredAt) entries.push(retained);
+      await writeSideChatCollectionFile(this.#sideChatCollectionPath, { ...file, entries });
+    });
+  }
+
+  async registerSideChatOrigin(entry: StoredSideChatCollectionEntry): Promise<void> {
+    this.#requireInitialized();
+    const parsed = storedSideChatCollectionEntrySchema.parse(entry);
+    if (!parsed.registeredAt)
+      throw new MappingStoreError("INVALID_RECORD", "Side chat registration timestamp is required");
+    await this.#enqueue(async () => {
+      const file = await readSideChatCollectionFile(this.#sideChatCollectionPath);
+      const previous = file.entries.find((item) => item.threadId === parsed.threadId);
+      if (previous && previous.sourceThreadId !== parsed.sourceThreadId)
+        throw new MappingStoreError("MAPPING_CONFLICT", "Side chat source cannot be reassigned");
+      const next = {
+        ...previous,
+        threadId: parsed.threadId,
+        sourceThreadId: parsed.sourceThreadId,
+        projectId: previous ? previous.projectId : parsed.projectId,
+        registeredAt: previous?.registeredAt ?? parsed.registeredAt,
+      };
+      const entries = file.entries.filter((item) => item.threadId !== parsed.threadId);
+      entries.push(next);
+      await writeSideChatCollectionFile(this.#sideChatCollectionPath, { ...file, entries });
     });
   }
 
@@ -1401,6 +1479,10 @@ export class MappingStore {
 
   get #sectionPlacementsPath(): string {
     return path.join(this.#sectionsDirectory, "placements.json");
+  }
+
+  get #sideChatCollectionPath(): string {
+    return path.join(this.#directory, "side-chat-collection.json");
   }
 
   get #supersededSessionsPath(): string {
