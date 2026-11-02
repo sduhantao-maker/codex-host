@@ -141,6 +141,8 @@ async function fixture(
         registry.register(api, { harnessCatalog: options.catalog === true && index === 0 }),
     });
   });
+  // Delegation bypasses Desktop input: await native admission, not the fake spawn signal.
+  await Promise.all(scopes.map((scope) => scope.start()));
   await Promise.all(hosts.map((host) => host.ready));
   return {
     registry,

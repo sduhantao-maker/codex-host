@@ -24,6 +24,7 @@ done < <(git ls-files -z -- \
   'packages/host-runtime/test/*controlled-updates.test.ts' \
   'packages/harness-broker/test/broker-fork.test.ts' \
   'packages/harness-broker/test/broker-steer-*.test.ts' \
+  'packages/adapters/deepseek-harness/test/**/*.test.ts' \
   'packages/adapters/claude-code/test/claude-code-adapter.test.ts' \
   'packages/adapters/claude-code/test/sdk-transport.test.ts' \
   'packages/adapters/claude-code/test/claude-active-fork.test.ts' \
@@ -31,6 +32,8 @@ done < <(git ls-files -z -- \
   'packages/protocol-core/test/codex-ui-projector.test.ts' \
   'packages/protocol-core/test/thread-fork.test.ts' \
   'packages/desktop-control/test/renderer-host-rpc-routing.test.ts' \
+  'packages/desktop-control/test/renderer-rpc-steering*.test.ts' \
+  'packages/renderer-extension/test/renderer-rpc-steering*.test.ts' \
   'packages/renderer-extension/test/*sidechat*.test.ts' \
   'packages/renderer-extension/test/install-renderer-binding-isolation.test.ts' \
   'packages/renderer-extension/test/settings/pages.test.ts' \

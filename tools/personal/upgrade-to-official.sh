@@ -14,8 +14,8 @@ source_branch="$(git symbolic-ref --short HEAD)"
 base="$(git describe --tags --match 'v[0-9]*' --abbrev=0 HEAD)"
 source_commit="$(git rev-parse HEAD)"
 patches="$(git rev-list --count "$base..$source_commit")"
-[ "$patches" -ge 1 ] && [ "$patches" -le 5 ] || die "expected one to five remaining personal patches after $base"
-[[ "$(git log -1 --format=%s)" == *P5* ]] || die "P5 must be the final patch"
+[ "$patches" -ge 1 ] && [ "$patches" -le 6 ] || die "expected one to six remaining personal patches after $base"
+[[ "$(git log -1 --format=%s)" == P5:* || "$(git log -1 --format=%s)" == P6:* ]] || die "P5 or P6 must be the final patch"
 
 node_bin="$(command -v node || true)"
 if [ -z "$node_bin" ] || [[ "$("$node_bin" --version)" != v24.* ]]; then
@@ -57,8 +57,8 @@ git merge-base --is-ancestor "$base" "$tag" || die "target tag must descend from
 overlap="$(mktemp "${TMPDIR:-/tmp}/codexhost-personal-overlap.XXXXXX")"
 trap 'rm -f "$overlap"' EXIT
 comm -12 <(git diff --name-only "$base" "$tag" | LC_ALL=C sort) \
-  <(git diff --name-only "$base" "$source_commit~1" | LC_ALL=C sort) > "$overlap"
-echo "Official $base -> $tag changes overlapping P1-P4:"
+  <(git diff --name-only "$base" "$source_commit" | LC_ALL=C sort) > "$overlap"
+echo "Official $base -> $tag changes overlapping P1-P6:"
 cat "$overlap"
 if [ -s "$overlap" ]; then
   paths=()
