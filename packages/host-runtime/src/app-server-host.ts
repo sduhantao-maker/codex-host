@@ -160,6 +160,11 @@ import {
   type HostTurnId,
 } from "@codexhost/shared-contracts";
 import { executeExternalThreadFork } from "./external-thread-fork.js";
+import {
+  appendExternalThreadInjectedText,
+  combineExternalThreadInjectedText,
+  decodeExternalThreadInjectedText,
+} from "./external-thread-inject.js";
 import { settleExternalOutputFailure } from "./external-output-failure.js";
 import { isSessionImportRequest, SessionImportRequests } from "./session-import-requests.js";
 import {
@@ -386,7 +391,16 @@ interface TurnProjectionGate {
 
 interface ProjectedTurn {
   projector: CodexTurnProjector;
+  firstOutputEmitted?: true;
 }
+
+type ExternalTurnMilestone =
+  | "turn_start_received"
+  | "sdk_ready_observed"
+  | "adapter_ready_observed"
+  | "turn_started_emitted"
+  | "first_output_emitted"
+  | "turn_completed_emitted";
 
 type HostApprovalRequestId = number;
 type HostQuestionRequestId = number;
@@ -532,6 +546,7 @@ const EXPLICIT_EXTERNAL_THREAD_METHODS = new Set([
   "thread/archive",
   "thread/delete",
   "thread/fork",
+  "thread/inject_items",
   "thread/items/list",
   "thread/metadata/update",
   "thread/name/set",
@@ -830,6 +845,7 @@ export class AppServerHost {
         queue: this.#desktopRequests,
         onClosed: (thread) => this.#resolveThreadInteractions(thread),
         canRelease: (thread) =>
+          thread.pendingInjectedText.length === 0 &&
           !this.#hasRunningSubagents(thread.id) &&
           !thread.session.hasBackgroundWork?.() &&
           !this.#externalSteering.hasPending(thread.id) &&
@@ -1247,10 +1263,13 @@ export class AppServerHost {
       // but do not let that optional inspection hold the Thread's routing queue.
       const queueThreadId =
         request.method === "codexhost/thread/usage/inspect" ? undefined : threadId;
+      const receivedAtMs = Date.now();
       this.#dispatchDesktopRequest(() =>
         this.#desktopRequests.run(queueThreadId, () =>
           this.#externalRuntime.idleRelease.runOperation(threadId, () =>
-            this.#guardReply(request, () => this.#handleDesktopRequest(request, frame)),
+            this.#guardReply(request, () =>
+              this.#handleDesktopRequest(request, frame, receivedAtMs),
+            ),
           ),
         ),
       );
@@ -1315,6 +1334,7 @@ export class AppServerHost {
   async #handleDesktopRequest(
     request: JsonRpcRequest,
     frame: Buffer<ArrayBufferLike>,
+    receivedAtMs = Date.now(),
   ): Promise<void> {
     if (this.#closeRequested) return;
     if (
@@ -2004,6 +2024,21 @@ export class AppServerHost {
         return;
       }
     }
+    if (request.method === "thread/inject_items") {
+      const params = routingParams(request);
+      if (typeof params.threadId === "string") {
+        const resolution = await this.#resolveExternalThread(params.threadId);
+        if (await this.#writeResolutionError(request, resolution)) return;
+        if (resolution.kind === "external") {
+          this.#dispatchDesktopReply(
+            request,
+            () => this.#injectExternalThreadItems(request, resolution.thread, params),
+            resolution.thread.id,
+          );
+          return;
+        }
+      }
+    }
     if (request.method === "turn/start") {
       const params = routingParams(request);
       const threadId = params.threadId;
@@ -2023,7 +2058,7 @@ export class AppServerHost {
       if (resolution.kind === "external") {
         this.#dispatchDesktopReply(
           request,
-          () => this.#startExternalTurn(request, resolution.thread),
+          () => this.#startExternalTurn(request, resolution.thread, receivedAtMs),
           resolution.thread.id,
         );
         return;
@@ -3762,6 +3797,7 @@ export class AppServerHost {
     arguments_: JsonObject | undefined,
     requestedTurnId?: HostTurnId,
     sourceHostId?: unknown,
+    receivedAtMs?: number,
   ): Promise<{ turnId: HostTurnId; turn: JsonObject; gate: TurnProjectionGate }> {
     const commands = thread.session.commands;
     if (!commands) {
@@ -3776,6 +3812,8 @@ export class AppServerHost {
       throw new ExternalCommandError(-32072, "External Thread already has an active operation");
     }
     const turnId = requestedTurnId ?? hostTurnIdSchema.parse(randomUUID());
+    if (receivedAtMs !== undefined)
+      this.#traceExternalTurn(thread, turnId, "turn_start_received", receivedAtMs);
     const projection: ProjectedTurn = {
       projector: new CodexTurnProjector({
         threadId: thread.id,
@@ -4303,6 +4341,34 @@ export class AppServerHost {
     return this.#externalRuntime.persistTerminalIdentity(thread, event);
   }
 
+  async #injectExternalThreadItems(
+    request: JsonRpcRequest,
+    thread: ExternalThread,
+    params: JsonObject,
+  ): Promise<void> {
+    if (thread.record.subagent) {
+      await this.#writer.json(
+        rpcError(request, -32076, "External Subagent Thread does not support thread/inject_items"),
+      );
+      return;
+    }
+    if (thread.running || thread.activeTurnId) {
+      await this.#writer.json(
+        rpcError(request, -32072, "External Thread already has an active Turn"),
+      );
+      return;
+    }
+    let texts: string[];
+    try {
+      texts = decodeExternalThreadInjectedText(params);
+    } catch (error) {
+      await this.#writer.json(rpcError(request, -32602, errorMessage(error)));
+      return;
+    }
+    appendExternalThreadInjectedText(thread.pendingInjectedText, texts);
+    await this.#writer.json(rpcEnvelope(request, { result: {} }));
+  }
+
   async #forkExternalThreadFromRenderer(request: JsonRpcRequest): Promise<void> {
     const parsed = externalThreadForkParamsSchema.safeParse(request.params);
     if (!parsed.success) {
@@ -4712,6 +4778,7 @@ export class AppServerHost {
     if (this.#externalThreadBusy(thread)) {
       throw new Error("External Thread already has an active Turn");
     }
+    const turnText = combineExternalThreadInjectedText(thread.pendingInjectedText, text);
     const turnId = hostTurnIdSchema.parse(requestedTurnId);
     const projection: ProjectedTurn = {
       projector: new CodexTurnProjector({
@@ -4719,7 +4786,7 @@ export class AppServerHost {
         turnId,
         cwd: thread.cwd,
         startedAtMs: Date.now(),
-        initialInput: [{ type: "text", text }],
+        initialInput: [{ type: "text", text: turnText }],
       }),
     };
     thread.running = true;
@@ -4733,7 +4800,7 @@ export class AppServerHost {
     const result = await thread.session.execute({
       type: "turn.start",
       turnId,
-      input: [{ type: "text", text }],
+      input: [{ type: "text", text: turnText }],
     });
     if (!result.ok) {
       thread.running = false;
@@ -4743,12 +4810,17 @@ export class AppServerHost {
       this.#signalActiveWorkChanged();
       throw new Error(result.error.message);
     }
+    thread.pendingInjectedText.length = 0;
   }
 
-  async #startExternalTurn(request: JsonRpcRequest, thread: ExternalThread): Promise<void> {
+  async #startExternalTurn(
+    request: JsonRpcRequest,
+    thread: ExternalThread,
+    receivedAtMs: number,
+  ): Promise<void> {
     const context = routingParams(request).additionalContext;
     if (isRecord(context) && Object.hasOwn(context, THREAD_STEERING_CONTEXT_PARAM)) {
-      await this.#steerExternalTurn(request, thread, true);
+      await this.#steerExternalTurn(request, thread, true, receivedAtMs);
       return;
     }
     if (this.#externalThreadBusy(thread) || this.#pendingExternalCommandRequests.has(thread.id)) {
@@ -4787,6 +4859,8 @@ export class AppServerHost {
         undefined,
         typeof params.clientUserMessageId === "string" ? params.clientUserMessageId : undefined,
         params[THREAD_REFERENCE_SOURCE_HOST_PARAM],
+        false,
+        receivedAtMs,
       );
       try {
         await this.#writer.json(rpcEnvelope(request, { result: { turn: started.turn } }));
@@ -4951,6 +5025,7 @@ export class AppServerHost {
     request: JsonRpcRequest,
     thread: ExternalThread,
     asStart = false,
+    receivedAtMs?: number,
   ): Promise<void> {
     let queued: ReturnType<ExternalThreadQueue["takeSteered"]>;
     let accepted = false;
@@ -4990,6 +5065,8 @@ export class AppServerHost {
             queued
               ? queued.sourceHostId
               : requestObject(request)[THREAD_REFERENCE_SOURCE_HOST_PARAM],
+            false,
+            receivedAtMs,
           ),
         (input) => this.#insertExternalInput(thread, input),
       );
@@ -5074,12 +5151,20 @@ export class AppServerHost {
     clientUserMessageId?: string,
     sourceHostId?: unknown,
     projectInput = false,
+    receivedAtMs?: number,
   ): Promise<{ turnId: HostTurnId; turn: JsonObject; gate: TurnProjectionGate }> {
     const text = restoreHarnessCommandMentions(inputText);
     const commands = thread.session.commands;
     if (!commands || !isExternalCommandCandidate(text)) {
       assertActive?.();
-      return this.#beginExternalTurn(thread, text, clientUserMessageId, sourceHostId, projectInput);
+      return this.#beginExternalTurn(
+        thread,
+        text,
+        clientUserMessageId,
+        sourceHostId,
+        projectInput,
+        receivedAtMs,
+      );
     }
     this.#pendingExternalCommandRequests.add(thread.id);
     try {
@@ -5098,6 +5183,7 @@ export class AppServerHost {
           clientUserMessageId,
           sourceHostId,
           projectInput,
+          receivedAtMs,
         );
       }
       return await this.#beginExternalCommand(
@@ -5106,6 +5192,7 @@ export class AppServerHost {
         command.arguments,
         undefined,
         sourceHostId,
+        receivedAtMs,
       );
     } catch (error) {
       if (error instanceof ExternalCommandError || error instanceof ExternalSteerError) throw error;
@@ -5148,6 +5235,7 @@ export class AppServerHost {
     clientUserMessageId?: string,
     sourceHostId?: unknown,
     projectInput = false,
+    receivedAtMs?: number,
   ): Promise<{
     turnId: HostTurnId;
     turn: JsonObject;
@@ -5164,7 +5252,10 @@ export class AppServerHost {
       throw new ExternalSteerError(-32072, "External Thread already has an active Turn");
     }
     const turnId = hostTurnIdSchema.parse(randomUUID());
+    if (receivedAtMs !== undefined)
+      this.#traceExternalTurn(thread, turnId, "turn_start_received", receivedAtMs);
     const startedAtMs = Date.now();
+    const turnText = combineExternalThreadInjectedText(thread.pendingInjectedText, text);
     const projection: ProjectedTurn = {
       projector: new CodexTurnProjector({
         threadId: thread.id,
@@ -5173,7 +5264,7 @@ export class AppServerHost {
         startedAtMs,
         ...(this.#options.externalOnly || projectInput
           ? {
-              initialInput: [{ type: "text" as const, text }],
+              initialInput: [{ type: "text" as const, text: turnText }],
               ...(clientUserMessageId ? { clientUserMessageId } : {}),
             }
           : {}),
@@ -5194,9 +5285,10 @@ export class AppServerHost {
       const result = await thread.session.execute({
         type: "turn.start",
         turnId,
-        input: [{ type: "text", text: rewriteDelegationMentionText(text) }],
+        input: [{ type: "text", text: rewriteDelegationMentionText(turnText) }],
       });
       if (!result.ok) throw new ExternalSteerError(-32073, result.error.message);
+      thread.pendingInjectedText.length = 0;
       return { turnId, turn: projection.projector.pendingTurn(), gate };
     } catch (error) {
       restoreExecutionHost();
@@ -5320,6 +5412,14 @@ export class AppServerHost {
       return;
     }
     let event = output.event;
+    if (event.type === "turn.started" || event.type === "turn.autonomous.started") {
+      // Claude emits this after SDK startup. This timestamp is Host observation, not native time.
+      this.#traceExternalTurn(
+        thread,
+        event.turnId,
+        thread.harnessId === "claude-code" ? "sdk_ready_observed" : "adapter_ready_observed",
+      );
+    }
     if (this.#meterTurnTiming(thread, event)) await this.#notifyThreadUsage(thread);
     if (event.type === "item.started" && event.item.type === "subagentDelegation") {
       event = {
@@ -5609,7 +5709,13 @@ export class AppServerHost {
     ) {
       thread.projectedTurns.delete(event.turnId);
     }
-    for (const message of result.messages) await this.#writer.json(message);
+    await this.#writeExternalTurnProjection(
+      thread,
+      event.turnId,
+      projection,
+      result.messages,
+      event.type === "turn.completed" ? event.outcome.status : undefined,
+    );
     if (event.type === "turn.completed") {
       await this.#setThreadStatus(
         thread,
@@ -5819,7 +5925,12 @@ export class AppServerHost {
       if (!denied) thread.ignoredInteractionIds.delete(interaction.interactionId);
       return;
     }
-    for (const message of result.messages) await this.#writer.json(message);
+    await this.#writeExternalTurnProjection(
+      thread,
+      interaction.turnId,
+      projection,
+      result.messages,
+    );
 
     const requestId = this.#allocateApprovalRequestId();
     const pending: PendingDesktopApproval = {
@@ -6053,7 +6164,12 @@ export class AppServerHost {
       }
       return;
     }
-    for (const message of result.messages) await this.#writer.json(message);
+    await this.#writeExternalTurnProjection(
+      thread,
+      interaction.turnId,
+      projection,
+      result.messages,
+    );
 
     const requestId = this.#allocateQuestionRequestId();
     const expiresAtMs = interaction.expiresAt ? Date.parse(interaction.expiresAt) : Number.NaN;
@@ -6294,5 +6410,44 @@ export class AppServerHost {
 
   #diagnose(error: unknown): void {
     this.#options.diagnosticOutput.write(`codexhost Host Runtime: ${errorMessage(error)}\n`);
+  }
+
+  #traceExternalTurn(
+    thread: ExternalThread,
+    turnId: HostTurnId,
+    stage: ExternalTurnMilestone,
+    atMs = Date.now(),
+    reason?: "succeeded" | "failed" | "cancelled",
+  ): void {
+    if (!this.#options.diagnosticOutput.writable) return;
+    this.#diagnose(
+      `external_turn ${JSON.stringify({ threadId: thread.id, turnId, stage, atMs, reason })}`,
+    );
+  }
+
+  async #writeExternalTurnProjection(
+    thread: ExternalThread,
+    turnId: HostTurnId,
+    projection: ProjectedTurn,
+    messages: readonly JsonObject[],
+    outcome?: "succeeded" | "failed" | "cancelled",
+  ): Promise<void> {
+    for (const message of messages) {
+      await this.#writer.json(message);
+      if (message.method === "turn/started") {
+        this.#traceExternalTurn(thread, turnId, "turn_started_emitted");
+      } else if (message.method === "turn/completed") {
+        this.#traceExternalTurn(thread, turnId, "turn_completed_emitted", Date.now(), outcome);
+      } else if (
+        !projection.firstOutputEmitted &&
+        typeof message.method === "string" &&
+        message.method.startsWith("item/")
+      ) {
+        const item = isRecord(message.params) ? message.params.item : undefined;
+        if (isRecord(item) && item.type === "userMessage") continue;
+        projection.firstOutputEmitted = true;
+        this.#traceExternalTurn(thread, turnId, "first_output_emitted");
+      }
+    }
   }
 }
