@@ -49,6 +49,8 @@ export class SidebarBrowser {
   private readonly alive = new WeakSet<WebSocket>();
   private readonly quality: SidebarBrowserQuality;
   private context: Promise<BrowserContext> | undefined;
+  /** Ordinary Chrome user agent learned by the last launch, so the next one starts with it. */
+  private userAgent: string | undefined;
   private idleSince = Date.now();
   private readonly sweeper: ReturnType<typeof setInterval>;
   private closed = false;
@@ -133,7 +135,9 @@ export class SidebarBrowser {
     const pending = (this.context ??= launch(
       this.options.profileDirectory,
       this.quality.deviceScale,
-    ).then((context) => {
+      this.userAgent,
+    ).then(({ context, userAgent }) => {
+      this.userAgent = userAgent;
       context.on("page", (page) => {
         void this.popup(page);
       });
@@ -196,8 +200,16 @@ export class SidebarBrowser {
 /**
  * Launch headless Chrome with a persistent profile: `CODEXHOST_BROWSER_EXECUTABLE`, else the
  * installed Chrome or Edge, else a Playwright-managed Chromium. Nothing is downloaded on demand.
+ *
+ * A person drives this browser, so it presents as ordinary Chrome: sites such as Google answer the
+ * headless user agent or `navigator.webdriver` with a bot check. The user agent carries the running
+ * version, so a launch that finds a different one than `knownUserAgent` relaunches with it.
  */
-async function launch(profileDirectory: string, deviceScale: number): Promise<BrowserContext> {
+async function launch(
+  profileDirectory: string,
+  deviceScale: number,
+  knownUserAgent: string | undefined,
+): Promise<{ context: BrowserContext; userAgent: string | undefined }> {
   const executable = process.env.CODEXHOST_BROWSER_EXECUTABLE;
   const candidates: Array<{ channel?: string; executablePath?: string }> =
     executable === undefined || executable === ""
@@ -205,17 +217,28 @@ async function launch(profileDirectory: string, deviceScale: number): Promise<Br
       : [{ executablePath: executable }];
   let failure: unknown;
   for (const candidate of candidates) {
-    try {
-      const context = await chromium.launchPersistentContext(profileDirectory, {
+    const open = (userAgent: string | undefined) =>
+      chromium.launchPersistentContext(profileDirectory, {
         ...candidate,
         headless: true,
         viewport: null,
         acceptDownloads: false,
-        args: [`--force-device-scale-factor=${String(deviceScale)}`],
+        ...(userAgent === undefined ? {} : { userAgent }),
+        args: [
+          `--force-device-scale-factor=${String(deviceScale)}`,
+          "--disable-blink-features=AutomationControlled",
+        ],
       });
+    try {
+      let context = await open(knownUserAgent);
+      const userAgent = await ordinaryUserAgent(context);
+      if (userAgent !== knownUserAgent) {
+        await context.close();
+        context = await open(userAgent);
+      }
       // The profile opens with a blank page that no viewer owns.
       await Promise.all(context.pages().map((page) => page.close()));
-      return context;
+      return { context, userAgent };
     } catch (error) {
       failure = error;
     }
@@ -225,4 +248,13 @@ async function launch(profileDirectory: string, deviceScale: number): Promise<Br
       failure instanceof Error ? (failure.message.split("\n")[0] ?? "") : String(failure)
     })`,
   );
+}
+
+/** The browser's own user agent without the headless marker; page overrides do not change it. */
+async function ordinaryUserAgent(context: BrowserContext): Promise<string | undefined> {
+  const cdp = await context.browser()?.newBrowserCDPSession();
+  if (cdp === undefined) return undefined;
+  const { userAgent } = await cdp.send("Browser.getVersion");
+  await cdp.detach();
+  return userAgent.replace("HeadlessChrome/", "Chrome/");
 }
