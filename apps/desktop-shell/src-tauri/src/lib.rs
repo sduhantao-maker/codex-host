@@ -79,6 +79,12 @@ impl Page {
     fn accepts_web_events(&self) -> bool {
         matches!(self, Self::Loading(_, _) | Self::Web)
     }
+
+    /// Whether launching CodexHost again should show the launch chooser here.
+    /// Only a dormant window has no page to lose; any page it shows is kept.
+    fn relaunch_shows_chooser(&self) -> bool {
+        matches!(self, Self::Dormant)
+    }
 }
 
 struct View {
@@ -451,6 +457,22 @@ pub(crate) fn show_onboarding(app: &AppHandle) {
     drop(view);
     navigate_onboarding(app);
     set_visible(app, true);
+}
+
+/// A second launch that asks for the chooser (app icon, Start menu, or
+/// `codexhost app --onboarding`) brings back the window the user left. The
+/// tray's explicit chooser entry still calls [`show_onboarding`].
+fn relaunch_onboarding(app: &AppHandle) {
+    let shell = app.state::<Shell>();
+    if shell.launcher.is_stopping() {
+        return;
+    }
+    let show_chooser = shell.view.lock().unwrap().page.relaunch_shows_chooser();
+    if show_chooser {
+        show_onboarding(app);
+    } else {
+        set_visible(app, true);
+    }
 }
 
 async fn launcher_action<T: Send + 'static>(
@@ -1165,7 +1187,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             while let Ok(activation) = activations.recv() {
                 let handle = activation_app.clone();
                 let delivered = activation_app.run_on_main_thread(move || match activation {
-                    Activation::Onboarding => show_onboarding(&handle),
+                    Activation::Onboarding => relaunch_onboarding(&handle),
                     Activation::Show => show_main(&handle, None),
                     Activation::Route(route) => show_main(&handle, Some(&route)),
                 });
@@ -1230,6 +1252,20 @@ mod tests {
         assert!(Page::Loading(Status::Reconnecting, None).accepts_web_events());
         assert!(Page::Loading(Status::Error, Some("err".into())).accepts_web_events());
         assert!(Page::Web.accepts_web_events());
+    }
+
+    #[test]
+    fn relaunch_keeps_every_page_except_a_dormant_window() {
+        assert!(Page::Dormant.relaunch_shows_chooser());
+        for page in [
+            Page::Onboarding,
+            Page::Web,
+            Page::Loading(Status::Starting, None),
+            Page::Loading(Status::Reconnecting, None),
+            Page::Loading(Status::Error, Some("err".into())),
+        ] {
+            assert!(!page.relaunch_shows_chooser());
+        }
     }
 
     #[test]
