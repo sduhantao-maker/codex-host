@@ -10,7 +10,23 @@ import type { BrowserFrameState } from "./BrowserFrame.ts";
 import type { BrowserPage, BrowserPageFactory } from "./BrowserPage.ts";
 import { currentBrowserTarget, type BrowserTabState } from "./BrowserPersistence.ts";
 import type { BrowserStore } from "./store.ts";
-import { parseBrowserAddress, type BrowserAddressFailure, type BrowserTarget } from "./url.ts";
+import {
+  parseBrowserAddress,
+  type BrowserAddressFailure,
+  type BrowserAddressResult,
+  type BrowserTarget,
+} from "./url.ts";
+import type { BrowserAddressOpening, BrowserSearchEngine } from "../../browser-settings.ts";
+
+/** Live Sidebar Browser preferences, read when each address-bar entry is handled. */
+export interface BrowserPreferences {
+  /** Engine for address-bar text that names no host. */
+  readonly searchEngine: () => BrowserSearchEngine;
+  /** Destination for address-bar entries. */
+  readonly addressOpening: () => BrowserAddressOpening;
+  /** Open a URL in the viewer's default browser. */
+  readonly openExternal: (url: string) => void;
+}
 
 /** Live tab state; navigation comes from its provider and draft validation stays local. */
 export interface BrowserControllerState {
@@ -30,6 +46,7 @@ export interface BrowserControllerOptions {
   readonly actions: BoundActions<BrowserStore>;
   readonly createPage: BrowserPageFactory;
   readonly openTab: (url: string) => void;
+  readonly preferences: BrowserPreferences;
 }
 
 /** Owns input validation and page lifetime without inspecting the carrier type. */
@@ -60,7 +77,7 @@ export class BrowserController implements HostObservable<BrowserControllerState>
       },
       openRequested: (value) => {
         if (this.disposed) return;
-        const result = parseBrowserAddress(value, options.applicationOrigin);
+        const result = this.parse(value);
         if (!result.ok) {
           this.addressFailed(result.reason);
           return;
@@ -127,13 +144,33 @@ export class BrowserController implements HostObservable<BrowserControllerState>
    */
   loadUrl(value: string): void {
     if (this.disposed) return;
-    const parsed = parseBrowserAddress(value, this.options.applicationOrigin);
+    const parsed = this.parse(value);
     if (!parsed.ok) {
       this.addressFailed(parsed.reason);
       return;
     }
     this.command(() => {
       this.page.frame.loadUrl(parsed.target);
+    });
+  }
+
+  /**
+   * Handle an address-bar entry: load it in this tab, or open it in the viewer's default browser.
+   * @param value - address-bar input.
+   */
+  submit(value: string): void {
+    if (this.options.preferences.addressOpening() === "sidebar") {
+      this.loadUrl(value);
+      return;
+    }
+    if (this.disposed) return;
+    const parsed = this.parse(value);
+    if (!parsed.ok) {
+      this.addressFailed(parsed.reason);
+      return;
+    }
+    this.command(() => {
+      this.options.preferences.openExternal(parsed.target.url);
     });
   }
 
@@ -195,6 +232,14 @@ export class BrowserController implements HostObservable<BrowserControllerState>
     if (this.checkpoint !== undefined) this.actions.replace(this.options.tabId, this.checkpoint);
   }
 
+  private parse(value: string): BrowserAddressResult {
+    return parseBrowserAddress(
+      value,
+      this.options.applicationOrigin,
+      this.options.preferences.searchEngine(),
+    );
+  }
+
   private addressFailed(reason: BrowserAddressFailure): void {
     this.store.set({ ...this.store.getSnapshot(), addressFailure: reason });
   }
@@ -233,8 +278,8 @@ export interface BrowserInjected {
   dispose(): Promise<void>;
   /** @param actions - writer from a recreated Session binding. */
   rebind(actions: BoundActions<BrowserStore>): void;
-  /** @param tabId - owning tab. @param value - address input. */
-  loadUrl(tabId: TabId, value: string): void;
+  /** @param tabId - owning tab. @param value - address-bar entry, opened where the user prefers. */
+  submitAddress(tabId: TabId, value: string): void;
   /** @param tabId - tab whose saved address the user requested to restore. */
   restore(tabId: TabId): void;
   /** @param tabId - owning tab. */
@@ -252,12 +297,14 @@ export interface BrowserInjected {
  * @param actions - persisted view-state writer.
  * @param createPage - composition-selected provider.
  * @param isTabOpen - authoritative layout membership, independent of mounted bodies and plugin lifetime.
+ * @param preferences - live search engine and address-bar destination.
  * @returns tab callbacks.
  */
 export function createBrowserControllers(
   actions: BoundActions<BrowserStore>,
   createPage: BrowserPageFactory,
   isTabOpen: (tabId: TabId) => boolean,
+  preferences: BrowserPreferences,
 ): BrowserInjected {
   let currentActions = actions;
   const controllers = new Map<
@@ -280,7 +327,12 @@ export function createBrowserControllers(
           held.signal.removeEventListener("abort", held.forget);
           void held.controller.dispose();
         }
-        const created = new BrowserController({ ...request, actions: currentActions, createPage });
+        const created = new BrowserController({
+          ...request,
+          actions: currentActions,
+          createPage,
+          preferences,
+        });
         const forget = (): void => {
           controllers.delete(tabId);
           // Plugin unload also aborts occurrences; only layout removal deletes saved navigation.
@@ -306,8 +358,8 @@ export function createBrowserControllers(
       currentActions = actions;
       for (const { controller } of controllers.values()) controller.rebind(actions);
     },
-    loadUrl: (id, value) => {
-      controller(id)?.loadUrl(value);
+    submitAddress: (id, value) => {
+      controller(id)?.submit(value);
     },
     restore: (id) => {
       controller(id)?.restore();

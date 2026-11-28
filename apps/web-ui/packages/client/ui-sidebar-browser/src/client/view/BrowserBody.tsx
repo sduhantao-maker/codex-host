@@ -74,7 +74,7 @@ function useBrowserDraft(
 export function BrowserBody(props: BrowserBodyProps): ReactNode {
   const {
     mount,
-    loadUrl,
+    submitAddress,
     restore,
     goBack,
     goForward,
@@ -133,7 +133,7 @@ export function BrowserBody(props: BrowserBodyProps): ReactNode {
   const error = frame.error;
   const submit = (event: FormEvent): void => {
     event.preventDefault();
-    loadUrl(tab.id, draft);
+    submitAddress(tab.id, draft);
   };
 
   return (

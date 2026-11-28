@@ -24,6 +24,7 @@
     "@codexhost/shared-contracts": "*",
     "@deepseek-ai/dsh-client-store": "*",
     "@deepseek-ai/dsh-client-ui-primitives": "*",
+    "@deepseek-ai/schemastery": "*",
     "react": "^18.2.0"
   },
   "dsh": {
@@ -31,7 +32,8 @@
       "inject": [
         "@deepseek-ai/dsh-api-workspace-controller",
         "@deepseek-ai/dsh-client-ui-sidebar-right",
-        "@deepseek-ai/dsh-client-ui-session"
+        "@deepseek-ai/dsh-client-ui-session",
+        "@deepseek-ai/dsh-client-ui-settings"
       ],
       "platform": "web"
     }

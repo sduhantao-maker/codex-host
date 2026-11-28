@@ -29,7 +29,15 @@ const GROUPS: readonly { title: SettingsKey; items: readonly string[] }[] = [
   },
   {
     title: "general.interaction",
-    items: ["transcript-view", "developer-tools", "shortcuts", "link-opening", "composer-enter"],
+    items: [
+      "transcript-view",
+      "developer-tools",
+      "shortcuts",
+      "link-opening",
+      "browser-search-engine",
+      "browser-address-opening",
+      "composer-enter",
+    ],
   },
 ];
 const GROUPED_ITEMS = new Set(GROUPS.flatMap((group) => group.items));

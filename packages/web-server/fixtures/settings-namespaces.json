@@ -334,5 +334,92 @@
     "applies": "live",
     "secrets": [],
     "revision": 0
+  },
+  {
+    "ns": "ui-sidebar-browser",
+    "autoGenerate": false,
+    "schema": {
+      "uid": 3781,
+      "refs": {
+        "3773": {
+          "type": "const",
+          "meta": {
+            "required": true
+          },
+          "value": "bing"
+        },
+        "3774": {
+          "type": "const",
+          "meta": {
+            "required": true
+          },
+          "value": "google"
+        },
+        "3775": {
+          "type": "const",
+          "meta": {
+            "required": true
+          },
+          "value": "baidu"
+        },
+        "3776": {
+          "type": "const",
+          "meta": {
+            "required": true
+          },
+          "value": "duckduckgo"
+        },
+        "3777": {
+          "type": "union",
+          "meta": {
+            "default": "bing"
+          },
+          "list": [3773, 3774, 3775, 3776]
+        },
+        "3778": {
+          "type": "const",
+          "meta": {
+            "required": true
+          },
+          "value": "sidebar"
+        },
+        "3779": {
+          "type": "const",
+          "meta": {
+            "required": true
+          },
+          "value": "new-tab"
+        },
+        "3780": {
+          "type": "union",
+          "meta": {
+            "default": "sidebar"
+          },
+          "list": [3778, 3779]
+        },
+        "3781": {
+          "type": "object",
+          "meta": {
+            "default": {}
+          },
+          "dict": {
+            "searchEngine": 3777,
+            "addressOpening": 3780
+          }
+        }
+      }
+    },
+    "value": {
+      "searchEngine": "bing",
+      "addressOpening": "sidebar"
+    },
+    "base": {
+      "searchEngine": "bing",
+      "addressOpening": "sidebar"
+    },
+    "user": {},
+    "applies": "live",
+    "secrets": [],
+    "revision": 0
   }
 ]
