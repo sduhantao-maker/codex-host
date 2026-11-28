@@ -872,6 +872,12 @@ export function installCurrentRendererAdapter(): {
       if (!client?.openWeb) throw new Error("The local Host is unavailable");
       return client.openWeb();
     },
+    // The CodexHost window runs on this machine, so the local Host opens it.
+    openDesktopShell: async () => {
+      const client = disposed ? null : clients.forHost("local");
+      if (!client?.openDesktopShell) throw new Error("The local Host is unavailable");
+      return client.openDesktopShell();
+    },
     // The console lives on this machine, so it is always opened through the local Host.
     openConsole: async () => {
       const client = disposed ? null : clients.forHost("local");

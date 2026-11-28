@@ -54,6 +54,8 @@ import {
   isHostExtensionManagementMethod,
   consoleOpenParamsSchema,
   consoleOpenResultSchema,
+  desktopShellOpenParamsSchema,
+  desktopShellOpenResultSchema,
   webOpenParamsSchema,
   webOpenResultSchema,
 } from "@codexhost/shared-contracts";
@@ -297,6 +299,7 @@ import {
   type HostProductTelemetry,
 } from "./product-telemetry.js";
 import type { HostConsoleOpener } from "./console-opener.js";
+import type { HostDesktopShellOpener } from "./desktop-shell-opener.js";
 import type { HostWebOpener } from "./web-opener.js";
 
 const CONSOLE_REQUEST_TIMEOUT_MS = 120_000;
@@ -468,6 +471,7 @@ export interface AppServerHostOptions {
   /** Present only on the local Host started by the Launcher. */
   consoleOpener?: HostConsoleOpener;
   webOpener?: HostWebOpener;
+  desktopShellOpener?: HostDesktopShellOpener;
   onDelegationApi?: (api: DelegationControlRegistration) => (() => void) | undefined;
   /** Shared by all Hosts of one runtime; defaults to the bundled snapshot only. */
   modelPrices?: ModelPriceCatalog;
@@ -1552,6 +1556,7 @@ export class AppServerHost {
       handleUpdateRequest: (request) => this.#handleUpdateRequest(request),
       handleConsoleOpen: (request) => this.#handleConsoleOpen(request),
       handleWebOpen: (request) => this.#handleWebOpen(request),
+      handleDesktopShellOpen: (request) => this.#handleDesktopShellOpen(request),
       handleCodexAccountRequest: (request) => this.#handleCodexAccountRequest(request),
       inspectHarness: (request) => this.#inspectHarness(request),
       openHarnessWebUi: (request) => this.#openHarnessWebUi(request),
@@ -4290,6 +4295,26 @@ export class AppServerHost {
     }
     try {
       const result = webOpenResultSchema.parse(await opener.open());
+      await this.#writer.json(rpcEnvelope(request, { result }));
+    } catch (error) {
+      await this.#writer.json(rpcError(request, -32092, errorMessage(error).slice(0, 500)));
+    }
+  }
+
+  async #handleDesktopShellOpen(request: JsonRpcRequest): Promise<void> {
+    if (!desktopShellOpenParamsSchema.safeParse(request.params ?? {}).success) {
+      await this.#writer.json(rpcError(request, -32602, "Desktop shell params must be empty"));
+      return;
+    }
+    const opener = this.#options.desktopShellOpener;
+    if (!opener) {
+      await this.#writer.json(
+        rpcError(request, -32090, "The CodexHost window can be opened on the local Host only"),
+      );
+      return;
+    }
+    try {
+      const result = desktopShellOpenResultSchema.parse(await opener.open());
       await this.#writer.json(rpcEnvelope(request, { result }));
     } catch (error) {
       await this.#writer.json(rpcError(request, -32092, errorMessage(error).slice(0, 500)));

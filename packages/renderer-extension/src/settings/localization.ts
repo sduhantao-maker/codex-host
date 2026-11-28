@@ -51,6 +51,12 @@ export interface RendererSettingsMessages {
   readonly otherSection: string;
   readonly appearanceDescription: string;
   readonly appearanceGroup: string;
+  readonly desktopShellGroup: string;
+  readonly desktopShellTitle: string;
+  readonly desktopShellDescription: string;
+  readonly desktopShellOpen: string;
+  readonly desktopShellOpening: string;
+  readonly desktopShellFailed: string;
   readonly loadedSessions: {
     title: string;
     description: string;
@@ -351,8 +357,15 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   generalSection: "General",
   pluginsSection: "Plugin Pages",
   otherSection: "Other",
-  appearanceDescription: "Conversation display and local resource management.",
+  appearanceDescription: "CodexHost window, conversation display, and local resource management.",
   appearanceGroup: "Appearance",
+  desktopShellGroup: "CodexHost window",
+  desktopShellTitle: "Open the CodexHost window",
+  desktopShellDescription:
+    "Use CodexHost in its own window with this computer's background services. If it is already open, it comes forward with its page intact.",
+  desktopShellOpen: "Open",
+  desktopShellOpening: "Opening…",
+  desktopShellFailed: "The CodexHost window could not be opened",
   loadedSessions: {
     title: "Loaded sessions",
     description:
@@ -720,8 +733,15 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   generalSection: "通用",
   pluginsSection: "插件页面",
   otherSection: "其他",
-  appearanceDescription: "会话显示与本地资源管理。",
+  appearanceDescription: "CodexHost 窗口、会话显示与本地资源管理。",
   appearanceGroup: "外观",
+  desktopShellGroup: "CodexHost 窗口",
+  desktopShellTitle: "打开 CodexHost 窗口",
+  desktopShellDescription:
+    "在独立窗口中使用 CodexHost，与这里共用本机后台；窗口已打开时直接切换过去，页面保持不变。",
+  desktopShellOpen: "打开",
+  desktopShellOpening: "正在打开…",
+  desktopShellFailed: "CodexHost 窗口打开失败",
   loadedSessions: {
     title: "已加载会话",
     description:

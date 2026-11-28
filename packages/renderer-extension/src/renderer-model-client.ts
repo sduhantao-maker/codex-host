@@ -36,6 +36,10 @@ import {
   type HarnessDisplaySet,
   type HarnessDisplaySettings,
   CONSOLE_OPEN_METHOD,
+  DESKTOP_SHELL_OPEN_METHOD,
+  desktopShellOpenParamsSchema,
+  desktopShellOpenResultSchema,
+  type DesktopShellOpenResult,
   WEB_OPEN_METHOD,
   webOpenParamsSchema,
   webOpenResultSchema,
@@ -365,6 +369,7 @@ export interface RendererModelClient extends Partial<RendererSessionImportClient
   acknowledgeReleaseAnnouncement?(input: ReleaseAnnouncementAcknowledgeParams): Promise<void>;
   openConsole?(): Promise<ConsoleOpenResult>;
   openWeb?(): Promise<WebOpenResult>;
+  openDesktopShell?(): Promise<DesktopShellOpenResult>;
   inspectCodexAccountUsage?(input: CodexAccountUsageParams): Promise<CodexAccountUsageResult>;
   listHarnessAccountSources?(): Promise<HarnessAccountSourceListResult>;
   inspectHarnessAccount?(input: HarnessAccountInspectParams): Promise<HarnessAccountInspectResult>;
@@ -985,6 +990,13 @@ export function createRendererModelClient(
     async openWeb(): Promise<WebOpenResult> {
       const result = await manager.sendRequest(WEB_OPEN_METHOD, webOpenParamsSchema.parse({}));
       return webOpenResultSchema.parse(result);
+    },
+    async openDesktopShell(): Promise<DesktopShellOpenResult> {
+      const result = await manager.sendRequest(
+        DESKTOP_SHELL_OPEN_METHOD,
+        desktopShellOpenParamsSchema.parse({}),
+      );
+      return desktopShellOpenResultSchema.parse(result);
     },
     async openConsole(): Promise<ConsoleOpenResult> {
       const result = await manager.sendRequest(

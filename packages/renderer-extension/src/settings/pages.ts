@@ -131,6 +131,8 @@ export interface RendererUpdateClient extends MacOsSigningClient {
   /** Opens the local codexhost console; absent on Hosts that cannot. */
   openConsole?(): Promise<unknown>;
   openWeb?(): Promise<unknown>;
+  /** Opens or brings forward the CodexHost desktop window; local Host only. */
+  openDesktopShell?(): Promise<unknown>;
 }
 
 function panelIconName(view: string): RendererSettingsIconName {
@@ -983,7 +985,10 @@ export function createDefaultRendererSettingsPages(
       messages.locale,
       usageStatisticsHosts,
     ),
-    createAppearanceSettingsPage(messages, getLoadedSessionsClient),
+    createAppearanceSettingsPage(messages, getLoadedSessionsClient, () => {
+      const client = getUpdateClient();
+      return client?.openDesktopShell?.bind(client);
+    }),
     updatesPage(messages, getUpdateClient),
     aboutPage(messages, getUpdateClient),
   ]);

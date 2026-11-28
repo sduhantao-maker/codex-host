@@ -7,6 +7,7 @@ import {
 import type { ExternalHarnessId, JsonRpcRequest, JsonValue } from "@codexhost/protocol-core";
 import {
   CONSOLE_OPEN_METHOD,
+  DESKTOP_SHELL_OPEN_METHOD,
   WEB_OPEN_METHOD,
   CREDENTIAL_IMPORTS_METHOD,
   credentialImportsParamsSchema,
@@ -103,6 +104,7 @@ export interface DesktopControlRequestHost {
   handleUpdateRequest(request: JsonRpcRequest): Promise<void>;
   handleConsoleOpen(request: JsonRpcRequest): Promise<void>;
   handleWebOpen(request: JsonRpcRequest): Promise<void>;
+  handleDesktopShellOpen(request: JsonRpcRequest): Promise<void>;
   handleCodexAccountRequest(request: JsonRpcRequest): Promise<void>;
   inspectHarness(request: JsonRpcRequest): Promise<void>;
   openHarnessWebUi(request: JsonRpcRequest): Promise<void>;
@@ -295,6 +297,10 @@ export class DesktopControlRequests {
     }
     if (request.method === WEB_OPEN_METHOD) {
       this.#host.dispatchReply(request, () => this.#host.handleWebOpen(request));
+      return true;
+    }
+    if (request.method === DESKTOP_SHELL_OPEN_METHOD) {
+      this.#host.dispatchReply(request, () => this.#host.handleDesktopShellOpen(request));
       return true;
     }
     if (request.method === CONSOLE_OPEN_METHOD) {

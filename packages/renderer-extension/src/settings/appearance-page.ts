@@ -14,9 +14,49 @@ import {
   preferenceId,
 } from "./preference-ui.js";
 
+/** Opens the CodexHost window, or brings it forward; Codex Desktop keeps its page. */
+function desktopShellGroup(
+  document: Document,
+  messages: RendererSettingsMessages,
+  openDesktopShell: () => Promise<unknown>,
+): HTMLElement {
+  const { group, card } = createPreferenceGroup(document, messages.desktopShellGroup);
+  const buttonId = preferenceId("desktop-shell-open");
+  const row = createPreferenceItem(document, {
+    title: messages.desktopShellTitle,
+    description: messages.desktopShellDescription,
+    controlId: buttonId,
+  });
+  const button = document.createElement("button");
+  button.type = "button";
+  button.id = buttonId;
+  button.className = "settings-command-button settings-command-button--secondary shrink-0";
+  button.textContent = messages.desktopShellOpen;
+  button.setAttribute("aria-describedby", row.description.id);
+  button.addEventListener("click", () => {
+    button.disabled = true;
+    button.textContent = messages.desktopShellOpening;
+    row.description.dataset.invalid = "false";
+    row.description.textContent = messages.desktopShellDescription;
+    void openDesktopShell()
+      .catch((error: unknown) => {
+        row.description.dataset.invalid = "true";
+        row.description.textContent = `${messages.desktopShellFailed}: ${error instanceof Error ? error.message : String(error)}`;
+      })
+      .finally(() => {
+        button.disabled = false;
+        button.textContent = messages.desktopShellOpen;
+      });
+  });
+  row.item.append(button);
+  card.append(row.item);
+  return group;
+}
+
 export function createAppearanceSettingsPage(
   messages: RendererSettingsMessages,
   getLoadedSessionsClient: () => LoadedSessionsClient | null = () => null,
+  getOpenDesktopShell: () => (() => Promise<unknown>) | undefined = () => undefined,
 ): RendererSettingsPageDefinition {
   return Object.freeze({
     id: "appearance",
@@ -33,6 +73,12 @@ export function createAppearanceSettingsPage(
       const description = document.createElement("p");
       description.className = "settings-page-description";
       description.textContent = messages.appearanceDescription;
+
+      // Without a Host client there is nothing to open the window through.
+      const openDesktopShell = getOpenDesktopShell();
+      const desktopShell = openDesktopShell
+        ? desktopShellGroup(document, messages, openDesktopShell)
+        : null;
 
       const { group, card } = createPreferenceGroup(document, messages.appearanceGroup);
       const softWrapId = preferenceId("reasoning-soft-wrap");
@@ -53,7 +99,7 @@ export function createAppearanceSettingsPage(
       row.item.append(toggle);
       card.append(row.item);
 
-      context.content.append(heading, description, group);
+      context.content.append(heading, description, ...(desktopShell ? [desktopShell] : []), group);
       const disposeIdleRelease = mountIdleReleaseControls(
         context,
         messages,

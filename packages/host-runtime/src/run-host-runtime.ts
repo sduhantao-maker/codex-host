@@ -72,6 +72,7 @@ import { watchRemoteListenerSupervisor } from "./remote-listener-supervisor.js";
 import { remoteOfficialAppServerSocketPath } from "./remote-official-app-server.js";
 import { startConsoleControlServer } from "./console-control-server.js";
 import { consoleEntrypoint, createHostConsoleOpener } from "./console-opener.js";
+import { createHostDesktopShellOpener } from "./desktop-shell-opener.js";
 import { createHostWebOpener } from "./web-opener.js";
 import { createHostUpdateCoordinator, type HostUpdateCoordinator } from "./update-coordinator.js";
 import { HostReleaseAnnouncement } from "./release-announcement.js";
@@ -447,6 +448,7 @@ export async function runHostRuntime(input: {
   const runBody = async (): Promise<number> => {
     if (!isRemoteUnixListenerInvocation(input.arguments)) {
       const webOpener = createHostWebOpener(input.environment);
+      const desktopShellOpener = createHostDesktopShellOpener(input.environment);
       const remoteControlPlan = createRemoteControlAppServerPlan({
         arguments: input.arguments,
         environment: input.environment,
@@ -497,6 +499,7 @@ export async function runHostRuntime(input: {
                 ...(updateCoordinator ? { updateCoordinator } : {}),
                 ...(consoleOpener ? { consoleOpener } : {}),
                 ...(webOpener ? { webOpener } : {}),
+                ...(desktopShellOpener ? { desktopShellOpener } : {}),
               });
               void host.hostExtensions?.seedDefaultDesktopExtensions(
                 undefined,
@@ -528,6 +531,7 @@ export async function runHostRuntime(input: {
               ...(updateCoordinator ? { updateCoordinator } : {}),
               ...(consoleOpener ? { consoleOpener } : {}),
               ...(webOpener ? { webOpener } : {}),
+              ...(desktopShellOpener ? { desktopShellOpener } : {}),
             };
             const host = new AppServerHost({
               ...(runtimeMaintenance ? { runtimeMaintenance } : {}),
