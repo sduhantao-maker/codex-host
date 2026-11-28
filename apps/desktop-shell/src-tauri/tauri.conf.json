@@ -14,6 +14,7 @@
         "embedded-pages",
         "window-chrome",
         "desktop-notifications",
+        "codex-desktop",
         "extension-window"
       ],
       "csp": "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src ipc: http://ipc.localhost"

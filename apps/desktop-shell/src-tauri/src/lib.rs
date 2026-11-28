@@ -754,16 +754,18 @@ fn authorize_web_command(
     current_url: &Url,
 ) -> Result<(), String> {
     if !matches!(page, Page::Web) {
-        return Err("Notifications are only available on the active Web UI page".into());
+        return Err("Desktop shell commands are only available on the active Web UI page".into());
     }
     if !current_url.username().is_empty() || current_url.password().is_some() {
-        return Err("Notifications are not permitted for URLs with userinfo".into());
+        return Err("Desktop shell commands are not permitted for URLs with userinfo".into());
     }
     let Some(login) = last_login else {
-        return Err("Notifications require an authenticated Web origin".into());
+        return Err("Desktop shell commands require an authenticated Web origin".into());
     };
     if current_url.origin() != login.origin() {
-        return Err("Notifications are restricted to the active CodexHost Web origin".into());
+        return Err(
+            "Desktop shell commands are restricted to the active CodexHost Web origin".into(),
+        );
     }
     Ok(())
 }
@@ -898,6 +900,26 @@ async fn notification_send(
 }
 
 #[tauri::command]
+async fn codex_desktop_installed(
+    window: tauri::WebviewWindow,
+    shell: State<'_, Shell>,
+) -> Result<bool, String> {
+    require_live_web_window(&window, &shell)?;
+    launcher_action(shell.launcher.clone(), Launcher::codex_installed).await
+}
+
+/// Opens the official Codex Desktop, or brings it forward when it already
+/// runs; the Web page in this window stays as it is.
+#[tauri::command]
+async fn open_codex_desktop(
+    window: tauri::WebviewWindow,
+    shell: State<'_, Shell>,
+) -> Result<(), String> {
+    require_live_web_window(&window, &shell)?;
+    launcher_action(shell.launcher.clone(), Launcher::open_codex).await
+}
+
+#[tauri::command]
 async fn notification_open_settings(
     window: tauri::WebviewWindow,
     shell: State<'_, Shell>,
@@ -1016,7 +1038,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             notification_request_permission,
             notification_set_enabled,
             notification_send,
-            notification_open_settings
+            notification_open_settings,
+            codex_desktop_installed,
+            open_codex_desktop
         ])
         .on_window_event(|window, event| {
             if window.label() != MAIN {

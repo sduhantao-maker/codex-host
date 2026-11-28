@@ -247,6 +247,13 @@ function __codexhostDesktopShellInit(config) {
         await invoke("notification_open_settings");
       },
     });
+
+    window.__codexhostCodexDesktop = Object.freeze({
+      isInstalled: async () => Boolean(await invoke("codex_desktop_installed")),
+      open: async () => {
+        await invoke("open_codex_desktop");
+      },
+    });
   }
 
   if (isEmbeddedPage) {

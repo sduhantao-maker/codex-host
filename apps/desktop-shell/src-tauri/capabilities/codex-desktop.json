@@ -1,0 +1,10 @@
+{
+  "identifier": "codex-desktop",
+  "description": "Open the official Codex Desktop from the main desktop shell window on the local loopback Web UI only.",
+  "webviews": ["main"],
+  "local": false,
+  "remote": {
+    "urls": ["http://127.0.0.1:*/*", "http://localhost:*/*"]
+  },
+  "permissions": ["allow-codex-desktop-installed", "allow-open-codex-desktop"]
+}

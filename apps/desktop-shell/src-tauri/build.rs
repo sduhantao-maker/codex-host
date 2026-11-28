@@ -62,6 +62,8 @@ fn main() {
                 "notification_set_enabled",
                 "notification_send",
                 "notification_open_settings",
+                "codex_desktop_installed",
+                "open_codex_desktop",
                 "extension_window_drag",
                 "extension_window_hit_regions",
             ])),

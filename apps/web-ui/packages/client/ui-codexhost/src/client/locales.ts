@@ -46,6 +46,9 @@ export const en = {
 
   remoteAccess: "Remote access",
   "android.switchHost": "Switch computer",
+  "codexDesktop.open": "Open official Codex Desktop",
+  "codexDesktop.opening": "Opening Codex Desktop…",
+  "codexDesktop.failed": "Codex Desktop could not be opened. {detail}",
   "settings.open": "Settings",
   "settings.updateAvailable": "Settings · A new version is available",
   "settings.updateReady": "Settings · Restart to update to v{version}",
@@ -997,6 +1000,9 @@ export const zh: Record<ImportLocaleKey, string> = {
 
   remoteAccess: "远程访问",
   "android.switchHost": "切换电脑",
+  "codexDesktop.open": "打开官方 Codex Desktop",
+  "codexDesktop.opening": "正在打开官方 Codex Desktop…",
+  "codexDesktop.failed": "官方 Codex Desktop 打开失败。{detail}",
   "settings.open": "设置",
   "settings.updateAvailable": "设置 · 有新版本可用",
   "settings.updateReady": "设置 · 重启以更新到 v{version}",
